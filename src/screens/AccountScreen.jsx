@@ -58,7 +58,7 @@ export default function AccountScreen({
         <div className="avatar-palette">
           {PALETTE.map((c) => (
             <button key={c} className="avatar-swatch"
-              style={{ background: c, outline: user.avatarColor === c ? '2px solid #17181A' : 'none' }}
+              style={{ background: c, outline: user.avatarColor === c ? '1.5px solid #F2EDE4' : 'none', outlineOffset: '2px' }}
               onClick={() => setUser((u) => ({ ...u, avatarColor: c }))} aria-label={`Colore avatar ${c}`} />
           ))}
         </div>

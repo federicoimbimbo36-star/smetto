@@ -5,9 +5,25 @@
     <!-- viewport-fit=cover: su iPhone il contenuto arriva sotto il notch,
          e styles.css usa già env(safe-area-inset-*) per non finirci sotto -->
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#17181A" />
+    <meta name="theme-color" content="#0E0D0B" />
     <meta name="description" content="Tieni il conto delle sigarette e smetti un po' alla volta, insieme a qualcuno." />
+
+    <!-- Icone e manifest: è quello che trasforma "Aggiungi a schermata Home"
+         in un'app vera — icona sua nel telefono, apertura a schermo intero,
+         niente barra del browser. Senza il manifest resta un segnalibro.
+         I PNG si rigenerano dal logo con: python3 strumenti/genera-icone.py -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+
+    <!-- iPhone e iPad ignorano il manifest per l'icona e per la modalità a
+         schermo intero: vogliono ancora questi tre tag. -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Smetto" />
+    <meta name="mobile-web-app-capable" content="yes" />
+
     <title>Smetto</title>
   </head>
   <body>

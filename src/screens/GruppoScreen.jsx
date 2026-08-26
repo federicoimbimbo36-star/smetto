@@ -135,7 +135,7 @@ export default function GruppoScreen(props) {
             <div className="leaderboard-rank">
               {m.attivo ? (medaglie[i] || `#${i + 1}`) : '—'}
             </div>
-            <AvatarCircle name={m.name} color={m.attivo ? m.color : '#A9AAA3'} size={38} />
+            <AvatarCircle name={m.name} color={m.attivo ? m.color : '#4A4640'} size={38} />
             <div className="leaderboard-name">
               {m.name}{m.id === me.id ? ' (tu)' : ''}
               <div className="leaderboard-sub num">
@@ -190,7 +190,7 @@ export default function GruppoScreen(props) {
           <div key={m.id} className="member-join-row">
             <AvatarCircle name={m.name} color={m.color} size={34} />
             <span>{m.name}{m.id === gruppo.ownerId ? ' · owner' : ''}{m.id === me.id ? ' (tu)' : ''}</span>
-            {membri.some((x) => x.id === m.id) && <Check size={16} color="#3E6B52" style={{ marginLeft: 'auto' }} />}
+            {membri.some((x) => x.id === m.id) && <Check size={16} color="#F0A23C" style={{ marginLeft: 'auto' }} />}
           </div>
         ))}
       </div>

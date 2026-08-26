@@ -108,14 +108,15 @@ async function programmaSulWeb(daTs) {
   await Promise.all(TAPPE.map((t, i) => {
     const quando = daTs + t.min * 60000;
     if (quando <= adesso + ANTICIPO) return null;
-    // Niente `icon` / `badge`: puntavano a /icon-192.png e /badge.png, che
-    // in public/ non ci sono. Un'icona mancante non rompe la notifica, ma
-    // lascia una richiesta fallita per ogni tappa programmata. Torneranno
-    // quando ci saranno i file veri — serviranno comunque per la PWA.
+    // icon e badge esistono davvero in public/ (li genera
+    // strumenti/genera-icone.py): prima puntavano a due file mancanti e
+    // ogni tappa programmata lasciava dietro una richiesta fallita.
     return reg.showNotification(`${t.avviso} 🫁`, {
       body: t.avvisoTesto,
       tag: `tappa-${i}`,
       showTrigger: new Trigger(quando),
+      icon: '/icon-192.png',
+      badge: '/badge.png',
     });
   }).filter(Boolean));
 

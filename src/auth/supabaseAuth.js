@@ -20,7 +20,8 @@
 
 import { supabase, phoneToTechnicalEmail } from './supabaseClient';
 
-const PALETTE_DEFAULT = '#E24A17';
+/* deve restare allineato al primo colore di PALETTE in constants.js */
+const PALETTE_DEFAULT = '#D19A3E';
 
 async function fetchProfile(id) {
   const { data, error } = await supabase

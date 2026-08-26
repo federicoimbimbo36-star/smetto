@@ -2,7 +2,14 @@
 /* CONFIG                                                              */
 /* ------------------------------------------------------------------ */
 
-export const PALETTE = ['#E24A17', '#3E6B52', '#BE8850', '#17181A', '#3A5A6B', '#6B3A52'];
+/* I colori che si possono scegliere per il proprio avatar.
+   Sono tutti mezzi toni caldi e desaturati, scelti per due motivi:
+   1. vivono dentro la stessa luce del resto dell'app (vedi styles.css) —
+      un colore acceso qui dentro spaccherebbe l'atmosfera di ogni schermata
+      in cui compare una classifica;
+   2. sono abbastanza chiari da reggere le iniziali scritte in scuro sopra,
+      che è come li disegna .avatar-circle. */
+export const PALETTE = ['#D19A3E', '#C07054', '#8B9A60', '#A5717E', '#7E93A2', '#B3A184'];
 export const TRIGGER = ['stress', 'noia', 'caffè', 'dopo mangiato', 'con altri'];
 export const RIDUZIONE = 0.15;              // −15% sulla media della settimana precedente
 export const ATTESA = 180;                  // secondi del "aspetta prima di accendere"

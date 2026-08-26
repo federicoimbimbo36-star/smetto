@@ -46,9 +46,28 @@ src/
 ├─ components/             12 pezzi riusabili
 └─ screens/                le 5 schermate + i 2 overlay
 
+public/                    icone, manifest della PWA
 supabase/migrations/       lo schema del database, versionato
 verifica/controlli.mjs     controlli sui calcoli, senza dipendenze
+strumenti/genera-icone.py  rifà le icone PNG dal logo
 ```
+
+## Installarla sul telefono
+
+`index.html` dichiara il manifest e le icone, quindi «Aggiungi a schermata
+Home» dà un'app vera: icona propria, apertura a schermo intero, niente barra
+del browser. Le icone si rigenerano dal logo con
+`python3 strumenti/genera-icone.py` (serve Pillow).
+
+## Pubblicarla
+
+`PUBBLICARE.md` — guida passo passo, senza riga di comando.
+
+## La grafica
+
+`DESIGN.md` — il sistema visivo «Brace»: l'idea, le tre regole, la palette e
+cosa è cambiato. Tutto l'aspetto vive in `src/styles.css`; il file Figma di
+riferimento è **Smetto — Brace**.
 
 ## Backend
 
