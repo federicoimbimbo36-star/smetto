@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect width="64" height="64" rx="14" fill="#17181A"/>
+  <!-- la sigaretta: carta chiara, filtro ocra, brace arancione -->
+  <rect x="12" y="29" width="30" height="8" rx="2" fill="#F4F1EA"/>
+  <rect x="42" y="29" width="10" height="8" rx="2" fill="#BE8850"/>
+  <circle cx="12" cy="33" r="4" fill="#E24A17"/>
+  <!-- il taglio: la barra che dice "basta" -->
+  <path d="M14 48 L52 20" stroke="#E24A17" stroke-width="5" stroke-linecap="round"/>
+</svg>
