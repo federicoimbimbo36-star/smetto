@@ -1,14 +1,19 @@
-export default function BrandMark({ size = 34 }) {
-  /* Stesso marchio dell'icona dell'app (vedi strumenti/genera-icone.py):
-     la sigaretta in orizzontale e la brace accesa all'estremità — l'unica
-     luce del sistema. In verticale leggerebbe come un punto esclamativo,
-     che è il segnale opposto a quello che quest'app vuole dare. */
+/* Il marchio: un germoglio a due foglie.
+   Sostituisce la sigaretta con la brace accesa del vecchio logo — un'app
+   che aiuta a smettere non ha motivo di mettere una sigaretta in copertina,
+   e la foglia dice la stessa cosa che dice tutta l'interfaccia: quello che
+   stai facendo è una cosa che cresce.
+   Stessa forma di foglia della schermata Percorso (vedi Pianta.jsx): il
+   marchio e l'illustrazione parlano la stessa lingua. */
+const FOGLIA = 'M0 0 C7 -9 19 -12 28 -6 C21 3 8 6 0 0 Z';
+
+export default function BrandMark({ size = 34, sfondo = true }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 30 30" fill="none" aria-hidden="true">
-      <circle cx="7" cy="15" r="5.2" fill="#F0A23C" opacity=".15" />
-      <circle cx="7" cy="15" r="2.7" fill="#F0A23C" />
-      <rect x="10.6" y="13" width="12.8" height="4" rx="2" fill="#F2EDE4" />
-      <rect x="19.4" y="13" width="4" height="4" rx="2" fill="#C96A1E" />
+    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden="true">
+      {sfondo && <circle cx="16" cy="16" r="16" fill="#DDEDE6" />}
+      <path d="M16 26 C15.3 21.5 15.5 17 16 11.5" stroke="#286B5A" strokeWidth="2.4" strokeLinecap="round" />
+      <path d={FOGLIA} fill="#286B5A" transform="translate(15.4 19) scale(-0.36 0.36)" />
+      <path d={FOGLIA} fill="#286B5A" opacity="0.58" transform="translate(16.4 13.6) scale(0.4 0.4)" />
     </svg>
   );
 }

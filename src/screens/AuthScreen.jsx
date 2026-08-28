@@ -1,84 +1,113 @@
-import { Eye, EyeOff, Phone, Lock } from 'lucide-react';
-import { BrandMark } from '../components';
+import { Eye, EyeOff } from 'lucide-react';
+import { BrandMark, Pianta, CampoTelefono } from '../components';
 
 export default function AuthScreen(props) {
   const {
-    mode, setMode, phone, setPhone, password, setPassword, confirmPassword, setConfirmPassword,
+    mode, setMode, phone, setPhone, paese, setPaese,
+    password, setPassword, confirmPassword, setConfirmPassword,
     showPassword, setShowPassword, showConfirmPassword, setShowConfirmPassword, error, busy, onSubmit,
   } = props;
-  const handleKeyDown = (e) => { if (e.key === 'Enter' && !busy) onSubmit(); };
+  const invio = (e) => { if (e.key === 'Enter' && !busy) onSubmit(); };
+  const registrazione = mode === 'signup';
 
   return (
-    <div className="screen auth-screen">
-      <div className="brand-row auth-brand-row">
-        <BrandMark />
+    <div className="screen">
+      <div className="marchio-riga" style={{ justifyContent: 'center', marginBottom: 8 }}>
+        <BrandMark size={38} />
         <div>
-          <div className="brand-name">Smetto</div>
-          <div className="brand-tagline">Meno di ieri</div>
+          <div className="marchio-nome">Smetto</div>
+          <div className="marchio-claim">Meno di ieri</div>
         </div>
       </div>
 
-      <h1 className="screen-title">{mode === 'signup' ? 'Crea il tuo account' : 'Bentornato'}</h1>
-      <p className="screen-sub">
-        {mode === 'signup'
-          ? 'Iscriviti con il numero di telefono: il conteggio resta legato a te, su qualsiasi dispositivo.'
-          : 'Accedi con numero di telefono e password.'}
+      <Pianta giorni={7} dimensione={150} mostraStadio={false} />
+
+      <h1 className="titolo-schermata" style={{ textAlign: 'center', marginTop: 20 }}>
+        {registrazione ? 'Cominciamo' : 'Bentornato'}
+      </h1>
+      <p className="sotto-schermata" style={{ textAlign: 'center' }}>
+        {registrazione
+          ? 'Con il numero di telefono. Il percorso resta legato a te, su qualsiasi telefono.'
+          : 'Numero di telefono e password.'}
       </p>
 
-      <div className="segmented">
-        <button disabled={busy} className={mode === 'login' ? 'segmented-item active' : 'segmented-item'} onClick={() => setMode('login')}>Accedi</button>
-        <button disabled={busy} className={mode === 'signup' ? 'segmented-item active' : 'segmented-item'} onClick={() => setMode('signup')}>Registrati</button>
+      <div className="segmenti">
+        <button
+          disabled={busy} className={`segmento ${!registrazione ? 'segmento-on' : ''}`}
+          onClick={() => setMode('login')}
+        >
+          Accedi
+        </button>
+        <button
+          disabled={busy} className={`segmento ${registrazione ? 'segmento-on' : ''}`}
+          onClick={() => setMode('signup')}
+        >
+          Registrati
+        </button>
       </div>
 
-      <div className="field-group">
-        <label className="field-label"><Phone size={13} /> Numero di telefono</label>
-        <input className="text-input" type="tel" placeholder="+39 333 123 4567" value={phone}
-          onChange={(e) => setPhone(e.target.value)} onKeyDown={handleKeyDown} autoComplete="tel" disabled={busy} />
+      <div className="campo">
+        <span className="campo-label">Numero di telefono</span>
+        <CampoTelefono
+          paese={paese} setPaese={setPaese}
+          numero={phone} setNumero={setPhone}
+          disabled={busy} onInvio={() => { if (!busy) onSubmit(); }}
+        />
       </div>
 
-      <div className="field-group">
-        <label className="field-label"><Lock size={13} /> Password</label>
-        <div className="password-field">
-          <input className="text-input" type={showPassword ? 'text' : 'password'} placeholder="Almeno 6 caratteri"
-            value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={handleKeyDown}
-            autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} disabled={busy} />
-          <button type="button" className="password-toggle" onClick={() => setShowPassword((s) => !s)} disabled={busy}
-            title={showPassword ? 'Nascondi password' : 'Mostra password'}>
-            {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+      <div className="campo">
+        <label className="campo-label" htmlFor="a-pw">Password</label>
+        <div className="campo-password">
+          <input
+            id="a-pw" className="campo-input" type={showPassword ? 'text' : 'password'}
+            placeholder="Almeno 6 caratteri" value={password}
+            onChange={(e) => setPassword(e.target.value)} onKeyDown={invio}
+            autoComplete={registrazione ? 'new-password' : 'current-password'} disabled={busy}
+          />
+          <button
+            type="button" className="campo-occhio" onClick={() => setShowPassword((s) => !s)} disabled={busy}
+            aria-label={showPassword ? 'Nascondi la password' : 'Mostra la password'}
+          >
+            {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
           </button>
         </div>
       </div>
 
-      {mode === 'signup' && (
-        <div className="field-group">
-          <label className="field-label"><Lock size={13} /> Conferma password</label>
-          <div className="password-field">
-            <input className="text-input" type={showConfirmPassword ? 'text' : 'password'} placeholder="Ripeti la password"
-              value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} onKeyDown={handleKeyDown}
-              autoComplete="new-password" disabled={busy} />
-            <button type="button" className="password-toggle" onClick={() => setShowConfirmPassword((s) => !s)} disabled={busy}
-              title={showConfirmPassword ? 'Nascondi password' : 'Mostra password'}>
-              {showConfirmPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+      {registrazione && (
+        <div className="campo">
+          <label className="campo-label" htmlFor="a-pw2">Conferma la password</label>
+          <div className="campo-password">
+            <input
+              id="a-pw2" className="campo-input" type={showConfirmPassword ? 'text' : 'password'}
+              placeholder="Ripetila" value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)} onKeyDown={invio}
+              autoComplete="new-password" disabled={busy}
+            />
+            <button
+              type="button" className="campo-occhio" onClick={() => setShowConfirmPassword((s) => !s)} disabled={busy}
+              aria-label={showConfirmPassword ? 'Nascondi la password' : 'Mostra la password'}
+            >
+              {showConfirmPassword ? <EyeOff size={18} /> : <Eye size={18} />}
             </button>
           </div>
         </div>
       )}
 
-      {error && <p className="field-error">{error}</p>}
+      {error && <p className="campo-errore">{error}</p>}
 
-      <button className="btn btn-primary btn-block" onClick={onSubmit} disabled={busy}>
-        {busy ? 'Attendere…' : mode === 'signup' ? 'Crea account' : 'Accedi'}
+      <button className="btn btn-primario btn-blocco" style={{ marginTop: 8 }} onClick={onSubmit} disabled={busy}>
+        {busy ? 'Un attimo…' : registrazione ? 'Crea il mio account' : 'Entra'}
       </button>
 
-      <p className="auth-switch-hint">
-        {mode === 'signup' ? 'Hai già un account? ' : 'Non hai ancora un account? '}
-        <button type="button" className="link-btn auth-inline-link" onClick={() => setMode(mode === 'signup' ? 'login' : 'signup')} disabled={busy}>
-          {mode === 'signup' ? 'Accedi' : 'Registrati'}
-        </button>
-      </p>
+      <button
+        className="btn btn-testo btn-testo-centro" style={{ marginTop: 8 }} disabled={busy}
+        onClick={() => setMode(registrazione ? 'login' : 'signup')}
+      >
+        {registrazione ? 'Ho già un account' : 'Non ho ancora un account'}
+      </button>
 
-      <p className="policy-note">
-        Registri solo le tue sigarette. Se entri in un gruppo, gli amici vedono i tuoi conteggi:
+      <p className="nota" style={{ marginTop: 24 }}>
+        Registri solo le tue sigarette. Se entri in un gruppo, gli altri vedono i tuoi conteggi:
         è quello il patto che rende la classifica utile.
       </p>
     </div>

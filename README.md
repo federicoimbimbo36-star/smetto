@@ -1,7 +1,7 @@
 # Smetto
 
-Tieni il conto delle sigarette e smetti un po' alla volta — da solo o, meglio,
-con qualcuno che ti guarda.
+Un percorso personale verso una vita senza fumo: scendi un po' ogni settimana,
+da solo o — meglio — con qualcuno che ti guarda.
 
 ## Avviare l'app
 
@@ -18,15 +18,25 @@ quello lo puoi aprire dal telefono, se è sulla stessa rete di casa.
 npm run build     # produce dist/
 npm run preview   # serve dist/ come in produzione
 npm run lint
-npm run verifica  # controlli sui calcoli: date, piano, classifica
+npm run verifica  # calcoli + interfaccia: 996 controlli
 ```
 
-`npm run verifica` gira con Node puro, senza installare niente. Non è una suite
-completa: sono controlli mirati sui punti dove i bug c'erano davvero — confini
-di giornata attorno al cambio d'ora, numerazione delle settimane del piano,
-calcolo del calo in classifica — scritti in modo da **fallire** con il codice di
-prima. Devono girare con `TZ=Europe/Rome`, altrimenti quelli sull'ora legale non
-provano niente; lo script imposta il fuso da solo.
+`npm run verifica` gira con Node puro, senza installare niente, e fa due giri.
+
+`verifica/controlli.mjs` (66) controlla i **calcoli**, sui punti dove i bug
+c'erano davvero — confini di giornata attorno al cambio d'ora, numerazione
+delle settimane del piano, calcolo del calo in classifica, composizione del
+numero di telefono col prefisso, collocazione oraria delle sigarette segnate in
+ritardo — ed è scritto in modo da **fallire** con il codice di prima. Deve girare con `TZ=Europe/Rome`,
+altrimenti quelli sull'ora legale non provano niente; lo script imposta il fuso
+da solo.
+
+`verifica/redesign.mjs` (930) controlla l'**interfaccia**: tag JSX e parentesi
+bilanciate, componenti importati davvero, import mai usati, costanti usate prima
+di essere dichiarate, ogni classe scritta nel markup esistente in `styles.css`
+(e viceversa), contrasto WCAG AA di ogni coppia testo/fondo, bersagli tattili da
+44px, `prefers-reduced-motion`, focus visibile, safe area. Anche questo è stato
+provato rompendo il codice apposta: sette guasti diversi, sette fallimenti.
 
 ## Come è fatta
 
@@ -40,15 +50,17 @@ src/
 ├─ installStorage.js       definisce window.storage: database + cache locale
 ├─ windowStorage.js        la sola copia locale (Capacitor Preferences o localStorage)
 ├─ notificheTappe.js       notifiche programmate delle tappe
-├─ utils/    format.js · storage.js
+├─ utils/    format.js · storage.js · arretrate.js (sigarette segnate in ritardo)
 ├─ auth/     index.js (sceglie il backend) · supabaseAuth.js · supabaseClient.js · localAuth.js
 ├─ data/     groups.js     gruppi e classifica, su tabelle Supabase
-├─ components/             12 pezzi riusabili
-└─ screens/                le 5 schermate + i 2 overlay
+│            prefissi.js   i prefissi telefonici internazionali
+├─ components/             15 pezzi riusabili (Pianta, Respiro, Timeline, …)
+└─ screens/                le 4 schermate + gruppo + i 2 overlay
 
 public/                    icone, manifest della PWA
 supabase/migrations/       lo schema del database, versionato
 verifica/controlli.mjs     controlli sui calcoli, senza dipendenze
+verifica/redesign.mjs      controlli su markup, CSS e accessibilità
 strumenti/genera-icone.py  rifà le icone PNG dal logo
 ```
 
@@ -65,9 +77,10 @@ del browser. Le icone si rigenerano dal logo con
 
 ## La grafica
 
-`DESIGN.md` — il sistema visivo «Brace»: l'idea, le tre regole, la palette e
-cosa è cambiato. Tutto l'aspetto vive in `src/styles.css`; il file Figma di
-riferimento è **Smetto — Brace**.
+`DESIGN.md` — il sistema visivo «Germoglio»: l'idea, le quattro regole, la
+palette e cosa è cambiato rispetto al vecchio tema «Brace». Tutto l'aspetto vive
+in `src/styles.css`, dove le regole sono scritte come commenti accanto al codice
+che le applica.
 
 ## Backend
 

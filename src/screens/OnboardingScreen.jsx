@@ -1,153 +1,257 @@
 import { useState } from 'react';
-import { Wallet, Hourglass } from 'lucide-react';
-import { MOTIVI, TAPPE, MANTRA, MINUTI_PER_SIGARETTA } from '../constants';
+import { ArrowLeft } from 'lucide-react';
+import { MOTIVI, MINUTI_PER_SIGARETTA } from '../constants';
 import { eur, eur0, tempoVita } from '../utils/format';
-import { BrandMark } from '../components';
+import { BrandMark, Pianta } from '../components';
+
+/* ------------------------------------------------------------------ */
+/*  ONBOARDING                                                         */
+/*                                                                     */
+/*  Cinque schermate, una domanda per schermata, e nessuna che chieda  */
+/*  due cose insieme. L'ordine non è casuale: prima il PERCHÉ, poi i   */
+/*  numeri. Chi arriva qui ha già deciso qualcosa — chiedergli il      */
+/*  prezzo del pacchetto come prima cosa lo tratta come un foglio      */
+/*  Excel, e il motivo scritto di suo pugno è esattamente ciò che      */
+/*  ricomparirà nel momento in cui starà per accendere.                */
+/*                                                                     */
+/*  Il permesso alle notifiche è nell'ultima schermata, con un solo    */
+/*  interruttore: era un passo intero, e un passo intero per un        */
+/*  permesso di sistema è un passo di troppo.                          */
+/* ------------------------------------------------------------------ */
+
+const PASSI = 5;
 
 export default function OnboardingScreen({ iniziale, onFine, onChiediPermesso }) {
   const [passo, setPasso] = useState(0);
-  const [prezzo, setPrezzo] = useState(iniziale?.prezzoPacchetto ? String(iniziale.prezzoPacchetto).replace('.', ',') : '');
-  const [perPacchetto, setPerPacchetto] = useState(String(iniziale?.perPacchetto || 20));
+  const [motivo, setMotivo] = useState(iniziale?.motivo || '');
+  const [motivoScelto, setMotivoScelto] = useState(null);
   const [baseline, setBaseline] = useState(iniziale?.baseline ? String(iniziale.baseline) : '');
   const [sesso, setSesso] = useState(iniziale?.sesso || 'non_detto');
-  const [motivo, setMotivo] = useState(iniziale?.motivo || '');
+  const [prezzo, setPrezzo] = useState(
+    iniziale?.prezzoPacchetto ? String(iniziale.prezzoPacchetto).replace('.', ',') : '',
+  );
+  const [perPacchetto, setPerPacchetto] = useState(String(iniziale?.perPacchetto || 20));
+  const [avvisi, setAvvisi] = useState(true);
 
   const nPrezzo = Number(String(prezzo).replace(',', '.'));
   const nPer = Number(perPacchetto) || 20;
   const nBase = Number(String(baseline).replace(',', '.'));
   const unitario = nPrezzo > 0 ? nPrezzo / nPer : 0;
 
-  const chiudi = (avvisiCorpo) => onFine({
-    prezzoPacchetto: nPrezzo > 0 ? nPrezzo : null,
-    perPacchetto: nPer,
-    baseline: nBase > 0 ? nBase : null,
-    sesso,
-    motivo: motivo.trim(),
-  }, avvisiCorpo);
+  const avanti = () => setPasso((p) => Math.min(PASSI - 1, p + 1));
+  const indietro = () => setPasso((p) => Math.max(0, p - 1));
+
+  async function concludi() {
+    if (avvisi) await onChiediPermesso();
+    onFine({
+      prezzoPacchetto: nPrezzo > 0 ? nPrezzo : null,
+      perPacchetto: nPer,
+      baseline: nBase > 0 ? nBase : null,
+      sesso,
+      motivo: motivo.trim(),
+    }, avvisi);
+  }
 
   return (
-    <div className="screen">
-      <div className="onb-dots">
-        {[0, 1, 2, 3].map((i) => <span key={i} className={`onb-dot ${i <= passo ? 'onb-dot-on' : ''}`} />)}
+    <div className="screen onb">
+      {passo > 0 && (
+        <button className="btn-indietro" onClick={indietro}>
+          <ArrowLeft size={18} /> Indietro
+        </button>
+      )}
+
+      <div className="onb-passi" role="progressbar" aria-valuenow={passo + 1} aria-valuemin={1} aria-valuemax={PASSI}>
+        {Array.from({ length: PASSI }, (_, i) => (
+          <span key={i} className={`onb-passo ${i <= passo ? 'onb-passo-on' : ''}`} />
+        ))}
       </div>
 
-      {passo === 0 && (
-        <>
-          <h1 className="screen-title">Quanto costa il tuo pacchetto?</h1>
-          <p className="screen-sub">
-            È la prima cosa che mi serve. Da qui in poi ogni sigaretta che <b>non</b> fumi diventa un
-            numero che vedi crescere, giorno dopo giorno.
-          </p>
-          <div className="row-2">
-            <div className="field-group">
-              <label className="field-label"><Wallet size={13} /> Prezzo del pacchetto</label>
-              <input className="text-input" inputMode="decimal" placeholder="6,00" value={prezzo}
-                onChange={(e) => setPrezzo(e.target.value)} autoFocus />
+      <div className="onb-corpo">
+        {/* -------------------- 1. benvenuto -------------------- */}
+        {passo === 0 && (
+          <div className="onb-finale">
+            <div className="marchio-riga" style={{ marginBottom: 8 }}>
+              <BrandMark size={40} />
+              <div>
+                <div className="marchio-nome">Smetto</div>
+                <div className="marchio-claim">Meno di ieri</div>
+              </div>
             </div>
-            <div className="field-group">
-              <label className="field-label">Quante ne contiene</label>
-              <input className="text-input" type="number" inputMode="numeric" value={perPacchetto}
-                onChange={(e) => setPerPacchetto(e.target.value)} />
-            </div>
-          </div>
-          {unitario > 0 && (
-            <div className="onb-eco">
-              Una sigaretta ti costa <b>{eur(unitario)}</b>. Ogni volta che ne salti una, quei
-              centesimi finiscono nel contatore.
-            </div>
-          )}
-          <button className="btn btn-primary btn-block" disabled={!(nPrezzo > 0)} onClick={() => setPasso(1)}>Continua</button>
-        </>
-      )}
 
-      {passo === 1 && (
-        <>
-          <h1 className="screen-title">Quante ne fumi in una giornata normale?</h1>
-          <p className="screen-sub">
-            Una stima basta: serve a costruire il primo piano e a sapere da quale ritmo stai
-            scendendo. Dalla settimana prossima uso i numeri veri che avrai registrato.
-          </p>
-          <input className="text-input" type="number" inputMode="numeric" placeholder="Es. 15"
-            value={baseline} onChange={(e) => setBaseline(e.target.value)} autoFocus />
-          <div className="trigger-chips">
-            {[5, 10, 15, 20, 30].map((n) => (
-              <button key={n} className="trigger-chip" onClick={() => setBaseline(String(n))}>{n}</button>
-            ))}
-          </div>
+            <Pianta giorni={0} dimensione={200} mostraStadio={false} />
 
-          {nBase > 0 && unitario > 0 && (
-            <div className="onb-eco">
-              A questo ritmo spendi <b>{eur0(nBase * unitario * 365)}</b> all'anno, e ogni giorno
-              se ne vanno <b>{tempoVita(nBase * MINUTI_PER_SIGARETTA[sesso])}</b> di vita attesa.
-            </div>
-          )}
-
-          <div className="field-group" style={{ marginTop: 20 }}>
-            <label className="field-label"><Hourglass size={13} /> Per il calcolo dei minuti</label>
-            <div className="trigger-chips">
-              {[['uomo', 'uomo · 17 min'], ['donna', 'donna · 22 min'], ['non_detto', 'preferisco non dirlo · 20 min']].map(([k, l]) => (
-                <button key={k} className={`trigger-chip ${sesso === k ? 'trigger-chip-on' : ''}`} onClick={() => setSesso(k)}>{l}</button>
-              ))}
-            </div>
-            <p className="micro-hint">
-              Lo studio UCL del 2024 stima 17 minuti di vita persi per sigaretta negli uomini e 22
-              nelle donne. Se preferisci non rispondere uso la media di 20.
+            <h1 className="titolo-schermata" style={{ marginTop: 24 }}>
+              Vuoi iniziare una vita senza fumo?
+            </h1>
+            <p className="testo">
+              Non ti chiederò di smettere domani mattina. Ti chiederò di scendere un po' ogni
+              settimana, e di non mollare quando ricadi — perché ricadere fa parte del percorso.
             </p>
           </div>
+        )}
 
-          <button className="btn btn-primary btn-block" onClick={() => setPasso(2)}>Continua</button>
-          <button className="link-btn onb-skip" onClick={() => setPasso(2)}>Non lo so</button>
-        </>
-      )}
+        {/* -------------------- 2. il motivo -------------------- */}
+        {passo === 1 && (
+          <>
+            <h1 className="titolo-schermata">Perché vuoi smettere?</h1>
+            <p className="sotto-schermata">
+              Te lo rimetto davanti agli occhi nel momento in cui starai per accendere.
+            </p>
+            <div className="onb-scelte">
+              {MOTIVI.map((m) => (
+                <button
+                  key={m.id}
+                  className={`onb-scelta ${motivoScelto === m.id ? 'onb-scelta-on' : ''}`}
+                  onClick={() => { setMotivoScelto(m.id); setMotivo(m.frase); }}
+                >
+                  <span className="onb-scelta-icona" aria-hidden="true">{m.icona}</span>
+                  {m.testo}
+                </button>
+              ))}
+            </div>
+            <div className="campo" style={{ marginTop: 24 }}>
+              <label className="campo-label" htmlFor="onb-motivo">Scrivilo come lo diresti a voce</label>
+              <input
+                id="onb-motivo" className="campo-input" value={motivo}
+                onChange={(e) => setMotivo(e.target.value)}
+                placeholder="Es. Voglio rincorrere mio figlio senza fermarmi"
+              />
+            </div>
+          </>
+        )}
 
-      {passo === 2 && (
-        <>
-          <h1 className="screen-title">Perché vuoi smettere?</h1>
-          <p className="screen-sub">
-            Te lo rimetto davanti agli occhi nel momento in cui starai per accendere. Scrivilo come
-            lo diresti a voce, non come una frase da manuale.
-          </p>
-          <input className="text-input" placeholder="Es. Voglio rincorrere mio figlio senza fermarmi"
-            value={motivo} onChange={(e) => setMotivo(e.target.value)} autoFocus />
-          <div className="trigger-chips">
-            {MOTIVI.map((m) => <button key={m} className="trigger-chip" onClick={() => setMotivo(m)}>{m}</button>)}
-          </div>
-          <button className="btn btn-primary btn-block" style={{ marginTop: 22 }} onClick={() => setPasso(3)}>Continua</button>
-          <button className="link-btn onb-skip" onClick={() => setPasso(3)}>Salta</button>
-        </>
-      )}
+        {/* -------------------- 3. quanto fumi -------------------- */}
+        {passo === 2 && (
+          <>
+            <h1 className="titolo-schermata">Quanto fumi oggi?</h1>
+            <p className="sotto-schermata">
+              Una stima basta. Serve a sapere da quale ritmo stai scendendo: dalla settimana
+              prossima uso i numeri veri che avrai registrato.
+            </p>
+            <div className="campo">
+              <label className="campo-label" htmlFor="onb-base">Sigarette al giorno</label>
+              <input
+                id="onb-base" className="campo-input" type="number" inputMode="numeric"
+                placeholder="Es. 15" value={baseline}
+                onChange={(e) => setBaseline(e.target.value)} autoFocus
+              />
+            </div>
+            <div className="pastiglie">
+              {[5, 10, 15, 20, 30].map((n) => (
+                <button
+                  key={n} className={`pastiglia ${Number(baseline) === n ? 'pastiglia-on' : ''}`}
+                  onClick={() => setBaseline(String(n))}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
 
-      {passo === 3 && (
-        <>
-          <h1 className="screen-title">Ti avviso quando il tuo corpo cambia</h1>
-          <p className="screen-sub">
-            Ogni volta che passi una soglia dall'ultima sigaretta ti arriva un messaggio. Non sono
-            promemoria: sono cose che stanno succedendo davvero mentre non fumi.
-          </p>
+            <div className="campo" style={{ marginTop: 32 }}>
+              <label className="campo-label">Per il calcolo dei minuti di vita</label>
+              <div className="pastiglie">
+                {[['uomo', 'uomo · 17 min'], ['donna', 'donna · 22 min'], ['non_detto', 'non lo dico · 20 min']].map(([k, l]) => (
+                  <button
+                    key={k} className={`pastiglia ${sesso === k ? 'pastiglia-on' : ''}`}
+                    onClick={() => setSesso(k)}
+                  >
+                    {l}
+                  </button>
+                ))}
+              </div>
+              <p className="nota">
+                Lo studio UCL del 2024 stima 17 minuti di vita persi per sigaretta negli uomini e
+                22 nelle donne. Se preferisci non rispondere uso la media di 20.
+              </p>
+            </div>
+          </>
+        )}
 
-          <div className="anteprima-notifiche">
-            {[TAPPE[1], TAPPE[3], TAPPE[4]].map((t) => (
-              <div key={t.avviso} className="anteprima-notifica">
-                <div className="anteprima-mark"><BrandMark size={22} /></div>
-                <div>
-                  <div className="anteprima-titolo">{t.avviso} 🫁</div>
-                  <div className="anteprima-testo">{t.avvisoTesto}</div>
+        {/* -------------------- 4. quanto costa -------------------- */}
+        {passo === 3 && (
+          <>
+            <h1 className="titolo-schermata">Quanto costa un pacchetto?</h1>
+            <p className="sotto-schermata">
+              Da qui in poi ogni sigaretta che <b>non</b> fumi diventa un numero che vedi crescere.
+            </p>
+            <div className="riga">
+              <div className="campo">
+                <label className="campo-label" htmlFor="onb-prezzo">Prezzo</label>
+                <input
+                  id="onb-prezzo" className="campo-input" inputMode="decimal" placeholder="6,00"
+                  value={prezzo} onChange={(e) => setPrezzo(e.target.value)} autoFocus
+                />
+              </div>
+              <div className="campo">
+                <label className="campo-label" htmlFor="onb-per">Quante ne contiene</label>
+                <input
+                  id="onb-per" className="campo-input" type="number" inputMode="numeric"
+                  value={perPacchetto} onChange={(e) => setPerPacchetto(e.target.value)}
+                />
+              </div>
+            </div>
+            {unitario > 0 && (
+              <div className="onb-eco">
+                Una sigaretta ti costa <b>{eur(unitario)}</b>.
+                {nBase > 0 && (
+                  <> A quindici al giorno di ritmo attuale sono <b>{eur0(nBase * unitario * 365)}</b> all'anno,
+                    e ogni giorno se ne vanno <b>{tempoVita(nBase * MINUTI_PER_SIGARETTA[sesso])}</b> di vita attesa.</>
+                )}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* -------------------- 5. si parte -------------------- */}
+        {passo === 4 && (
+          <div className="onb-finale">
+            <Pianta giorni={0} dimensione={210} mostraStadio={false} />
+            <h1 className="titolo-schermata" style={{ marginTop: 16 }}>Il tuo percorso inizia oggi.</h1>
+            <p className="testo">
+              {motivo
+                ? <>Il tuo motivo: <b style={{ color: 'var(--t1)' }}>“{motivo}”</b>. Te lo rimetto davanti quando servirà.</>
+                : 'Puoi scrivere in qualsiasi momento il tuo motivo dalla scheda Aiuto.'}
+            </p>
+
+            <button
+              className="interruttore card" style={{ marginTop: 28, padding: 20 }}
+              onClick={() => setAvvisi((a) => !a)} aria-pressed={avvisi}
+            >
+              <div className="card-riga-corpo">
+                <div className="interruttore-titolo">Avvisami quando il corpo cambia</div>
+                <div className="interruttore-sub">
+                  Battito, ossigeno, gusto, respiro: cose che stanno succedendo davvero mentre non fumi.
+                  Non sono promemoria.
                 </div>
               </div>
-            ))}
+              <span className={`interruttore-pill ${avvisi ? 'interruttore-on' : ''}`}>
+                <span className="interruttore-knob" />
+              </span>
+            </button>
           </div>
+        )}
+      </div>
 
-          <button className="btn btn-primary btn-block" onClick={async () => { await onChiediPermesso(); chiudi(true); }}>
-            Attiva gli avvisi
+      <div className="onb-piede pila">
+        {passo < PASSI - 1 ? (
+          <button
+            className="btn btn-primario btn-blocco" onClick={avanti}
+            disabled={passo === 3 && !(nPrezzo > 0)}
+          >
+            {passo === 0 ? 'Cominciamo' : 'Continua'}
           </button>
-          <button className="link-btn onb-skip" onClick={() => chiudi(false)}>Non ora</button>
+        ) : (
+          <button className="btn btn-primario btn-blocco" onClick={concludi}>
+            Comincia il mio percorso
+          </button>
+        )}
 
-          <div className="motto" style={{ marginTop: 22 }}>
-            <span className="motto-testo">{MANTRA}</span>
-            <span className="motto-coda">Se ricadi, riprova.</span>
-          </div>
-        </>
-      )}
+        {(passo === 1 || passo === 2) && (
+          <button className="btn btn-testo btn-testo-tenue btn-testo-centro" onClick={avanti}>
+            Lo faccio dopo
+          </button>
+        )}
+      </div>
     </div>
   );
 }

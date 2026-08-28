@@ -2,16 +2,20 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 
 import { PALETTE, DAY, MINUTI_PER_SIGARETTA, logKey, seenKey, FASCE, TAPPE, RILANCI } from './constants';
 import {
-  sod, dayDiff, ora, eur, ymd, dataBreve, prossimaMedia, normalizePhone,
-  addGiorni, maxTs, daYmd,
+  sod, dayDiff, ora, eur, ymd, dataBreve, prossimaMedia,
+  addGiorni, maxTs, daYmd, durata, componiTelefono, cifreLocali,
 } from './utils/format';
 import { readStore, writeStore } from './utils/storage';
 import auth from './auth';
+import { distribuisci, tappeDaRiavviare } from './utils/arretrate';
+import { PREFISSO_DEFAULT } from './data/prefissi';
 import groups from './data/groups';
-import { ConfirmDialog, RecoveryOtpModal, BottomNav } from './components';
 import {
-  AuthScreen, OnboardingScreen, CravingOverlay, RipartiOverlay,
-  RegistraScreen, PianoScreen, RecapScreen, GruppoScreen, AccountScreen,
+  ConfirmDialog, RecoveryOtpModal, BottomNav, UmoreFoglio, Respiro, AggiungiTante,
+} from './components';
+import {
+  AuthScreen, OnboardingScreen, CravingOverlay, RicadutaOverlay,
+  OggiScreen, PercorsoScreen, AiutoScreen, GruppoScreen, ProfiloScreen,
 } from './screens';
 import { programmaTappe, annullaTappe } from './notificheTappe';
 import './styles.css';
@@ -37,6 +41,7 @@ export default function App() {
   const [sessionChecked, setSessionChecked] = useState(false);
   const [authMode, setAuthMode] = useState('signup');
   const [authPhone, setAuthPhone] = useState('');
+  const [authPaese, setAuthPaese] = useState(PREFISSO_DEFAULT);
   const [authPassword, setAuthPassword] = useState('');
   const [authConfirmPassword, setAuthConfirmPassword] = useState('');
   const [authError, setAuthError] = useState('');
@@ -53,11 +58,20 @@ export default function App() {
   const [tick, setTick] = useState(0);          // batte ogni secondo: fa muovere i contatori
   const [ultimoTs, setUltimoTs] = useState(null);
   const [craving, setCraving] = useState(false);
+  const [respiro, setRespiro] = useState(false);          // respirazione guidata a schermo intero
+  const [umore, setUmore] = useState(false);              // «come ti senti oggi?»
+  const [tante, setTante] = useState(false);              // «ne ho fumate più di una»
+  const [lotto, setLotto] = useState(null);               // l'ultimo blocco aggiunto, per poterlo annullare
   const [tappaBanner, setTappaBanner] = useState(null);   // tappa del corpo appena raggiunta
   const [riparti, setRiparti] = useState(null);           // schermata dopo una ricaduta
 
-  const [activeTab, setActiveTab] = useState('registra');
-  const [recapPeriodo, setRecapPeriodo] = useState('giorno');
+  /* Quattro schede, non cinque: il gruppo è una sotto-schermata di Aiuto,
+     e `dentroGruppo` è lo stato che dice se ci siamo dentro. Prima era
+     `activeTab === 'gruppo'`, e da quel confronto dipendono due cose
+     concrete — la frequenza del sync e l'azzeramento dei non letti. */
+  const [activeTab, setActiveTab] = useState('oggi');
+  const [dentroGruppo, setDentroGruppo] = useState(false);
+  const [percorsoSezione, setPercorsoSezione] = useState('traguardi');
   const [toast, setToast] = useState(null);
   const [confirmModal, setConfirmModal] = useState(null);
   const [otpModal, setOtpModal] = useState(false);
@@ -76,6 +90,7 @@ export default function App() {
   const [nonLetti, setNonLetti] = useState(0);
 
   const finestra = useRef(null);
+  const timerLotto = useRef(null);
   const toastTimer = useRef(null);
   const visti = useRef({});
   /* copia sempre aggiornata di `dati`, per il codice asincrono (sync) che
@@ -160,7 +175,7 @@ export default function App() {
 
   // i contatori si muovono solo dove si vedono, per non far lavorare il telefono a vuoto
   useEffect(() => {
-    if (activeTab !== 'registra' && activeTab !== 'piano') return;
+    if (activeTab !== 'oggi' && activeTab !== 'percorso') return;
     const i = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(i);
   }, [activeTab]);
@@ -240,19 +255,19 @@ export default function App() {
     if (nuovi > 0) {
       visti.current = visti_;
       writeStore(seenKey(user.id), visti_);
-      if (activeTab !== 'gruppo') setNonLetti((n) => n + nuovi);
+      if (!dentroGruppo) setNonLetti((n) => n + nuovi);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dati?.groups, dati?.notify, user.id, activeTab]);
+  }, [dati?.groups, dati?.notify, user.id, dentroGruppo]);
 
   useEffect(() => {
     if (!isAuthenticated || !dati?.groups?.length) return;
     sync(true);
-    const i = setInterval(() => sync(false), activeTab === 'gruppo' ? 30000 : 90000);
+    const i = setInterval(() => sync(false), dentroGruppo ? 30000 : 90000);
     return () => clearInterval(i);
-  }, [isAuthenticated, dati?.groups, activeTab, sync]);
+  }, [isAuthenticated, dati?.groups, dentroGruppo, sync]);
 
-  useEffect(() => { if (activeTab === 'gruppo') setNonLetti(0); }, [activeTab]);
+  useEffect(() => { if (dentroGruppo) setNonLetti(0); }, [dentroGruppo]);
 
   /* Fra le 22 e le 8 niente notifica di sistema: il toast in app resta,
      ma non si sveglia nessuno per una sigaretta altrui. */
@@ -280,16 +295,24 @@ export default function App() {
   /* ---------------------------- accesso ---------------------------- */
 
   function switchAuthMode(mode) { setAuthMode(mode); setAuthError(''); }
-  function isValidPhone(p) { return p.replace(/[^0-9]/g, '').length >= 8; }
 
   async function handleAuthSubmit() {
-    const rawPhone = authPhone.trim();
-    if (!isValidPhone(rawPhone)) { setAuthError('Inserisci un numero di telefono valido.'); return; }
+    /* La lunghezza si controlla sul numero LOCALE e con i limiti del paese
+       scelto: «almeno 8 cifre» andava bene finché il prefisso era sempre
+       +39, ma un numero danese ne ha 8 e uno indiano 10, e con la vecchia
+       regola metà mondo passava un controllo che non controllava niente. */
+    const locali = cifreLocali(authPhone);
+    if (locali.length < authPaese.min || locali.length > authPaese.max) {
+      setAuthError(authPaese.min === authPaese.max
+        ? `Un numero ${authPaese.nome} ha ${authPaese.min} cifre dopo il ${authPaese.prefisso}.`
+        : `Un numero ${authPaese.nome} ha fra ${authPaese.min} e ${authPaese.max} cifre dopo il ${authPaese.prefisso}.`);
+      return;
+    }
     if (authPassword.length < 6) { setAuthError('La password deve avere almeno 6 caratteri.'); return; }
     if (authMode === 'signup' && authPassword !== authConfirmPassword) {
       setAuthError('Le due password non coincidono.'); return;
     }
-    const phone = normalizePhone(rawPhone);
+    const phone = componiTelefono(authPaese, authPhone);
     setAuthError(''); setAuthBusy(true);
     try {
       const res = authMode === 'signup'
@@ -306,7 +329,7 @@ export default function App() {
       applyProfile(res.user);
       await loadLog(res.user.id);
       setIsAuthenticated(true);
-      setActiveTab('registra');
+      setActiveTab('oggi');
       showToast(authMode === 'signup' ? 'Account creato. Si comincia 🎯' : 'Bentornato 👋');
       setAuthPassword(''); setAuthConfirmPassword('');
     } catch (err) {
@@ -404,9 +427,12 @@ export default function App() {
   }
 
   function resetAuthState() {
-    setActiveTab('registra'); setAuthMode('login');
-    setAuthPhone(''); setAuthPassword(''); setAuthConfirmPassword(''); setAuthError('');
-    setIsAuthenticated(false); setDati(null); setUltimoTs(null); setCraving(false);
+    setActiveTab('oggi'); setDentroGruppo(false); setAuthMode('login');
+    setAuthPhone(''); setAuthPaese(PREFISSO_DEFAULT);
+    setAuthPassword(''); setAuthConfirmPassword(''); setAuthError('');
+    setIsAuthenticated(false); setDati(null); setUltimoTs(null);
+    setCraving(false); setRespiro(false); setUmore(false);
+    setTante(false); setLotto(null);
     setGruppi([]); setGruppoAttivo(null); setMembriPerGruppo({});
     setGroupStep('menu'); setUser(UTENTE_VUOTO);
     // roba dell'account precedente che non deve sopravvivere al logout:
@@ -583,7 +609,7 @@ export default function App() {
   function handleCheckin() {
     const ts = Date.now();
     salva({ ...dati, checkins: [...(dati.checkins || []), ts] });
-    showToast('Confermato: oggi zero. Resti in classifica 💪');
+    showToast('Segnato: oggi zero 🌱');
   }
 
   /* ---------------------------- conteggio ---------------------------- */
@@ -616,7 +642,6 @@ export default function App() {
       // che pure avevano fatto comparire quella schermata.
       ripartenze: (dati.ripartenze || 0) + (ricaduta ? 1 : 0),
     });
-    apriFinestra(ts);
     setTappaBanner(null);
     // le tappe di recupero ripartono da questa sigaretta: a telefono chiuso
     // devono comunque arrivare, quindi le riprogrammiamo subito — sempre che
@@ -624,12 +649,101 @@ export default function App() {
     if (dati.avvisiCorpo !== false) programmaTappe(ts).catch(() => {});
 
     if (ricaduta) {
-      setRiparti({ pausa, frase: RILANCI[Math.floor(Math.random() * RILANCI.length)] });
+      /* Niente finestra dei 25 secondi qui: la schermata della ricaduta fa
+         già la stessa domanda ("cosa è successo?") e con più spazio. Aprire
+         anche la finestra vorrebbe dire ritrovarsi la stessa domanda una
+         seconda volta, in piccolo, appena chiusa la schermata. */
+      setRiparti({ ts, pausa, frase: RILANCI[Math.floor(Math.random() * RILANCI.length)] });
     } else {
-      showToast(unitario > 0
-        ? `Registrata · −${minutiPer} min · −${eur(unitario)}`
-        : `Registrata · −${minutiPer} minuti`);
+      apriFinestra(ts);
+      showToast('Registrata. Nessun problema, si continua.');
     }
+  }
+
+  /* Le sigarette che uno si è dimenticato di segnare.
+
+     Tre cose vanno fatte bene, e nessuna è ovvia:
+
+     1. NON tutte allo stesso istante. I timestamp qui reggono l'intervallo
+        medio, la fascia oraria a rischio e il confine di giornata della
+        classifica: cinque sigarette nello stesso minuto li falserebbero
+        tutti. `distribuisci` le sparge dentro la finestra scelta.
+
+     2. Le TAPPE DEL CORPO ripartono solo se una di queste è più recente
+        dell'ultima già registrata. Segnare adesso tre sigarette di ieri non
+        deve azzerare le otto ore pulite che uno ha oggi — sarebbe la
+        punizione perfetta per chi è stato onesto.
+
+     3. Niente schermata della ricaduta e niente conteggio delle ripartenze.
+        Quella schermata serve a chi ha appena ceduto dopo una pausa lunga,
+        non a chi sta mettendo in ordine il registro. */
+  function registraArretrate(quante, finestra) {
+    if (!finestra) return;
+    const nuovi = distribuisci(quante, finestra, dati.cigs);
+    if (!nuovi.length) return;
+
+    const primaDiTutto = dati;
+    const nuovoMin = nuovi[0];
+    const riavvio = tappeDaRiavviare(dati.cigs, nuovi);
+
+    salva({
+      ...dati,
+      // il percorso comincia dalla prima sigaretta conosciuta, anche se
+      // quella prima sigaretta la scopriamo adesso
+      start: dati.start === null ? nuovoMin : Math.min(dati.start, nuovoMin),
+      cigs: [...dati.cigs, ...nuovi],
+      ...(riavvio === null ? {} : { tappeViste: { ref: riavvio, idx: [] } }),
+    });
+
+    if (riavvio !== null) {
+      setTappaBanner(null);
+      if (dati.avvisiCorpo !== false) programmaTappe(riavvio).catch(() => {});
+    }
+
+    setTante(false);
+    setUltimoTs(null);
+    setLotto({ ts: nuovi, quante: nuovi.length, quando: finestra.breve, prima: primaDiTutto });
+    clearTimeout(timerLotto.current);
+    timerLotto.current = setTimeout(() => setLotto(null), 40000);
+  }
+
+  /* Annullare rimette esattamente il registro di prima invece di togliere
+     i timestamp uno per uno: `start` e `tappeViste` erano cambiati insieme
+     alle sigarette, e ricostruirli a ritroso è il modo migliore per
+     sbagliarli. */
+  function annullaLotto() {
+    if (!lotto) return;
+    salva(lotto.prima);
+    riallineaTappe(lotto.prima.cigs);
+    setLotto(null);
+    showToast('Annullato.');
+  }
+
+  /* La causa scelta nella schermata della ricaduta non finisce nel vuoto:
+     diventa l'etichetta di QUELLA sigaretta nel registro. Da lì risale nel
+     Percorso come «lo stress ti ha innescato 6 sigarette» e come suggerimento
+     di scrivere il se–allora giusto. È il modo di mantenere la promessa fatta
+     all'utente in quel momento: «saperlo serve». */
+  function handleCausaRicaduta(causa) {
+    if (!riparti?.ts || causa === '—') return;
+    salva({ ...dati, tags: { ...dati.tags, [riparti.ts]: causa } });
+  }
+
+  /* «Come ti senti oggi?» non è un sondaggio: è uno smistamento. Ogni
+     risposta porta da qualche parte, altrimenti chiedere è solo un modo
+     per far toccare un bottone in più. */
+  function handleUmore(id) {
+    setUmore(false);
+    if (id === 'voglia') { setCraving(true); return; }
+    if (id === 'fatica') { setActiveTab('aiuto'); return; }
+    if (id === 'bene') {
+      // se oggi è davvero a zero, «sto bene» vale come conferma e tiene
+      // la persona in classifica: è l'unico modo di restarci senza fumare
+      if (!checkedInOggi && (s?.oggi ?? 0) === 0 && dati?.start) { handleCheckin(); return; }
+      showToast('Bene. Continua così 🌱');
+      return;
+    }
+    showToast('Va bene anche così. Un passo alla volta.');
   }
 
   function registraResistenza() {
@@ -879,18 +993,26 @@ export default function App() {
   }, [contiBase, tick, now]);
 
   const tappe = useMemo(() => {
+    const quanto = (min) => {
+      if (min < 60) return `${min} min`;
+      if (min < 60 * 24) return `${min / 60} ore`;
+      const g = min / 60 / 24;
+      if (g < 30) return g === 1 ? '1 giorno' : `${g} giorni`;
+      if (g < 365) return `${Math.round(g / 30)} mesi`;
+      const a = Math.round(g / 365);
+      return a === 1 ? '1 anno' : `${a} anni`;
+    };
     const minuti = s?.ultima ? (now - s.ultima) / 60000 : 0;
     const idx = TAPPE.findIndex((t) => t.min > minuti);
     return TAPPE.map((t, i) => ({
       ...t,
       raggiunta: minuti >= t.min,
       corrente: i === idx,
+      // quanto manca alla tappa in corso: la Timeline lo mostra sotto la barra
+      manca: i === idx ? durata((t.min - minuti) * 60000) : null,
       progresso: i === idx ? (i === 0 ? minuti / t.min : (minuti - TAPPE[i - 1].min) / (t.min - TAPPE[i - 1].min)) : 0,
-      quando: t.min < 60 ? `${t.min} min`
-        : t.min < 60 * 24 ? `${t.min / 60} ore`
-          : t.min < 60 * 24 * 30 ? `${t.min / 60 / 24} giorni`
-            : t.min < 60 * 24 * 365 ? `${Math.round(t.min / 60 / 24 / 30)} mesi`
-              : `${Math.round(t.min / 60 / 24 / 365)} anni`,
+      // il singolare conta: la tappa dei 365 giorni scriveva «1 anni»
+      quando: quanto(t.min),
     }));
   }, [s?.ultima, now]);
 
@@ -1091,6 +1213,11 @@ export default function App() {
 
   const pianoTrigger = s?.topTrigger ? dati?.plans?.[s.topTrigger[0]] : null;
 
+  /* I giorni di percorso: quanti giorni sono passati dall'inizio, non da
+     quando hai smesso. È il numero su cui cresce la pianta, ed è l'unico
+     che NON torna mai indietro dopo una ricaduta. */
+  const giorniPercorso = dati?.start ? dayDiff(dati.start, now) : 0;
+
   /* ---------------------------- render ---------------------------- */
 
   return (
@@ -1098,8 +1225,8 @@ export default function App() {
       <div className="phone-frame">
         {!sessionChecked ? (
           <div className="app-shell">
-            <div className="screen auth-screen">
-              <p className="screen-sub" style={{ textAlign: 'center' }}>Verifica sessione…</p>
+            <div className="screen" style={{ textAlign: 'center', paddingTop: 120 }}>
+              <p className="testo">Un attimo…</p>
             </div>
           </div>
         ) : !isAuthenticated ? (
@@ -1107,6 +1234,7 @@ export default function App() {
             <AuthScreen
               mode={authMode} setMode={switchAuthMode}
               phone={authPhone} setPhone={setAuthPhone}
+              paese={authPaese} setPaese={setAuthPaese}
               password={authPassword} setPassword={setAuthPassword}
               confirmPassword={authConfirmPassword} setConfirmPassword={setAuthConfirmPassword}
               showPassword={showAuthPassword} setShowPassword={setShowAuthPassword}
@@ -1130,34 +1258,46 @@ export default function App() {
         ) : (
           <>
             <div className="app-shell">
-              {activeTab === 'registra' && (
-                <RegistraScreen
-                  s={s} conti={conti} now={now} ultimoTs={ultimoTs} gruppi={gruppi}
+              {activeTab === 'oggi' && (
+                <OggiScreen
+                  nome={user.nickname || user.name} s={s} conti={conti} now={now}
+                  giorniPercorso={giorniPercorso} ultimoTs={ultimoTs} gruppi={gruppi}
                   tappaBanner={tappaBanner} onChiudiBanner={() => setTappaBanner(null)}
-                  record={record} checkedIn={checkedInOggi} onCheckin={handleCheckin}
-                  onFuma={registraSigaretta} onCraving={() => setCraving(true)}
+                  checkedIn={checkedInOggi} lotto={lotto}
+                  onFuma={registraSigaretta} onUmore={() => setUmore(true)}
+                  onTante={() => setTante(true)} onAnnullaLotto={annullaLotto}
+                  onVediRegistro={() => { setActiveTab('percorso'); setPercorsoSezione('registro'); setLotto(null); }}
                   onAnnulla={handleAnnulla} onTag={handleTag} onSkipTag={() => setUltimoTs(null)}
-                  onVaiAlPiano={() => setActiveTab('piano')}
+                  onVaiAlPercorso={() => { setActiveTab('percorso'); setPercorsoSezione('numeri'); }}
                 />
               )}
-              {activeTab === 'piano' && (
-                <PianoScreen
-                  s={s} piano={piano} conti={conti} tappe={tappe} dati={dati}
+
+              {activeTab === 'percorso' && (
+                <PercorsoScreen
+                  s={s} mese={mese} registro={registro} tags={dati?.tags || {}} now={now}
+                  conti={conti} tappe={tappe} piano={piano} record={record}
+                  giorniPercorso={giorniPercorso}
+                  sezione={percorsoSezione} setSezione={setPercorsoSezione}
+                  onElimina={handleElimina} onTante={() => setTante(true)}
+                />
+              )}
+
+              {activeTab === 'aiuto' && !dentroGruppo && (
+                <AiutoScreen
+                  motivo={dati?.profile?.motivo} plans={dati?.plans} gruppi={gruppi}
+                  nonLetti={nonLetti}
+                  onCraving={() => setCraving(true)} onRespira={() => setRespiro(true)}
+                  onApriGruppo={() => setDentroGruppo(true)}
                   onSalvaPiano={handleSalvaPiano}
                   onModificaMotivo={() => salva({ ...dati, onboarded: false })}
                 />
               )}
-              {activeTab === 'recap' && (
-                <RecapScreen
-                  s={s} mese={mese} registro={registro} tags={dati?.tags || {}} now={now}
-                  periodo={recapPeriodo} setPeriodo={setRecapPeriodo} onElimina={handleElimina}
-                  record={record} conti={conti}
-                />
-              )}
-              {activeTab === 'gruppo' && (
+
+              {activeTab === 'aiuto' && dentroGruppo && (
                 <GruppoScreen
                   gruppi={gruppi} attivo={gruppoAttivo} setAttivo={setGruppoAttivo}
                   membri={membriAttuali} me={meCard} ioAttivo={ioAttivo}
+                  onIndietro={() => { setDentroGruppo(false); setGroupStep('menu'); }}
                   step={groupStep} setStep={(v) => { setGroupStep(v); setJoinError(''); setJoinPreview(null); }}
                   nome={groupNome} setNome={setGroupNome}
                   codiceInput={codiceInput} setCodiceInput={setCodiceInput}
@@ -1169,8 +1309,9 @@ export default function App() {
                   feed={feed} ultimoSync={ultimoSync}
                 />
               )}
-              {activeTab === 'account' && (
-                <AccountScreen
+
+              {activeTab === 'profilo' && (
+                <ProfiloScreen
                   user={user} setUser={setUser}
                   nicknameDraft={nicknameDraft} setNicknameDraft={setNicknameDraft}
                   pwFields={pwFields} setPwFields={setPwFields}
@@ -1182,19 +1323,36 @@ export default function App() {
                   avvisiCorpo={dati?.avvisiCorpo !== false} onToggleCorpo={handleToggleCorpo}
                   profile={dati.profile} onProfileChange={handleProfileChange}
                   onExportJSON={handleExportJSON} onExportCSV={handleExportCSV}
+                  start={dati?.start} conti={conti} giorniPercorso={giorniPercorso}
+                  motivo={dati?.profile?.motivo} obiettivo={s?.obiettivo ?? null}
+                  onModificaMotivo={() => salva({ ...dati, onboarded: false })}
                 />
               )}
             </div>
-            <BottomNav active={activeTab} onChange={setActiveTab} badge={nonLetti} />
+            <BottomNav
+              active={activeTab} badge={nonLetti}
+              onChange={(id) => { setActiveTab(id); if (id !== 'aiuto') setDentroGruppo(false); }}
+            />
           </>
         )}
 
-        {craving && (
+        {umore && (
+          <UmoreFoglio onScegli={handleUmore} onChiudi={() => setUmore(false)} />
+        )}
+
+        {tante && (
+          <AggiungiTante now={now} onConferma={registraArretrate} onChiudi={() => setTante(false)} />
+        )}
+
+        {craving && !respiro && (
           <CravingOverlay
             motivo={dati?.profile?.motivo}
             piano={pianoTrigger}
             minuti={minutiPer}
             costo={unitario}
+            gruppi={gruppi}
+            onRespira={() => setRespiro(true)}
+            onApriGruppo={() => { setCraving(false); setActiveTab('aiuto'); setDentroGruppo(true); }}
             onCeLHoFatta={() => {
               registraResistenza(); setCraving(false);
               showToast(unitario > 0
@@ -1206,11 +1364,28 @@ export default function App() {
           />
         )}
 
+        {respiro && (
+          <Respiro
+            onFine={() => {
+              setRespiro(false);
+              if (craving) {
+                registraResistenza(); setCraving(false);
+                showToast(unitario > 0
+                  ? `Voglia superata · +${minutiPer} min · +${eur(unitario)}`
+                  : `Voglia superata · +${minutiPer} minuti`);
+              }
+            }}
+            onHoFumato={() => { registraSigaretta(); setRespiro(false); setCraving(false); }}
+          />
+        )}
+
         {riparti && (
-          <RipartiOverlay
+          <RicadutaOverlay
             pausa={riparti.pausa}
             frase={riparti.frase}
             ripartenze={dati?.ripartenze || 0}
+            giorniPercorso={giorniPercorso}
+            onCausa={handleCausaRicaduta}
             onChiudi={() => setRiparti(null)}
           />
         )}

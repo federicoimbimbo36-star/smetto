@@ -9,7 +9,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint .",
-    "verifica": "TZ=Europe/Rome node verifica/controlli.mjs"
+    "verifica": "TZ=Europe/Rome node verifica/controlli.mjs && node verifica/redesign.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

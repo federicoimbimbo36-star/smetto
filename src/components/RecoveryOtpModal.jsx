@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Eye, EyeOff, Lock } from 'lucide-react';
+import { Eye, EyeOff } from 'lucide-react';
 
 export default function RecoveryOtpModal({ phone, onCancel, onVerify }) {
   const [step, setStep] = useState('code');            // 'code' -> 'password'
@@ -25,54 +25,62 @@ export default function RecoveryOtpModal({ phone, onCancel, onVerify }) {
     if (res?.error) setError(res.error);
   }
 
-  const handleKeyDown = (e) => { if (e.key === 'Enter' && !busy) submit(); };
+  const invio = (e) => { if (e.key === 'Enter' && !busy) submit(); };
 
   return (
-    <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
-      <div className="modal modal-small">
-        <div className="modal-title">Recupera password</div>
+    <div className="modale-velo" onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
+      <div className="modale" role="dialog" aria-modal="true">
+        <h2 className="modale-titolo">Recupera la password</h2>
 
         {step === 'code' ? (
           <>
-            <p className="modal-hint">
-              Abbiamo inviato un codice via SMS al numero {phone}. Inseriscilo qui sotto per continuare.
-            </p>
-            <div className="field-group">
-              <label className="field-label">Codice ricevuto</label>
-              <input className="text-input" inputMode="numeric" placeholder="123456" value={code}
-                onChange={(e) => setCode(e.target.value)} onKeyDown={handleKeyDown} autoFocus disabled={busy} />
+            <p className="modale-testo">Ti abbiamo mandato un codice via SMS al {phone}. Scrivilo qui sotto.</p>
+            <div className="campo" style={{ marginTop: 20 }}>
+              <label className="campo-label" htmlFor="otp-code">Codice ricevuto</label>
+              <input
+                id="otp-code" className="campo-input" inputMode="numeric" placeholder="123456" value={code}
+                onChange={(e) => setCode(e.target.value)} onKeyDown={invio} autoFocus disabled={busy}
+              />
             </div>
           </>
         ) : (
           <>
-            <p className="modal-hint">Codice verificato. Scegli la nuova password per il tuo account.</p>
-            <div className="field-group">
-              <label className="field-label"><Lock size={13} /> Nuova password</label>
-              <div className="password-field">
-                <input className="text-input" type={showPassword ? 'text' : 'password'} placeholder="Almeno 6 caratteri"
-                  value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={handleKeyDown}
-                  autoComplete="new-password" autoFocus disabled={busy} />
-                <button type="button" className="password-toggle" onClick={() => setShowPassword((s) => !s)} disabled={busy}
-                  title={showPassword ? 'Nascondi password' : 'Mostra password'}>
-                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+            <p className="modale-testo">Codice verificato. Scegli la nuova password.</p>
+            <div className="campo" style={{ marginTop: 20 }}>
+              <label className="campo-label" htmlFor="otp-pw">Nuova password</label>
+              <div className="campo-password">
+                <input
+                  id="otp-pw" className="campo-input" type={showPassword ? 'text' : 'password'}
+                  placeholder="Almeno 6 caratteri" value={password}
+                  onChange={(e) => setPassword(e.target.value)} onKeyDown={invio}
+                  autoComplete="new-password" autoFocus disabled={busy}
+                />
+                <button
+                  type="button" className="campo-occhio" onClick={() => setShowPassword((s) => !s)} disabled={busy}
+                  aria-label={showPassword ? 'Nascondi la password' : 'Mostra la password'}
+                >
+                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                 </button>
               </div>
             </div>
-            <div className="field-group">
-              <label className="field-label"><Lock size={13} /> Conferma password</label>
-              <input className="text-input" type={showPassword ? 'text' : 'password'} placeholder="Ripeti la password"
-                value={confirm} onChange={(e) => setConfirm(e.target.value)} onKeyDown={handleKeyDown}
-                autoComplete="new-password" disabled={busy} />
+            <div className="campo">
+              <label className="campo-label" htmlFor="otp-pw2">Conferma password</label>
+              <input
+                id="otp-pw2" className="campo-input" type={showPassword ? 'text' : 'password'}
+                placeholder="Ripeti la password" value={confirm}
+                onChange={(e) => setConfirm(e.target.value)} onKeyDown={invio}
+                autoComplete="new-password" disabled={busy}
+              />
             </div>
           </>
         )}
 
-        {error && <p className="field-error">{error}</p>}
+        {error && <p className="campo-errore">{error}</p>}
 
-        <div className="modal-row-actions">
-          <button className="btn btn-ghost" onClick={onCancel} disabled={busy}>Annulla</button>
-          <button className="btn btn-primary" onClick={submit} disabled={busy}>
-            {busy ? 'Attendere…' : step === 'code' ? 'Continua' : 'Reimposta password'}
+        <div className="modale-azioni">
+          <button className="btn btn-secondario" onClick={onCancel} disabled={busy}>Annulla</button>
+          <button className="btn btn-primario" onClick={submit} disabled={busy}>
+            {busy ? 'Un attimo…' : step === 'code' ? 'Continua' : 'Salva'}
           </button>
         </div>
       </div>

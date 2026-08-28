@@ -94,6 +94,47 @@ export const dataBreve = (ts) => new Date(ts).toLocaleDateString('it-IT', { day:
 
 export const prossimaMedia = (m) => Math.max(0, Math.min(m * (1 - RIDUZIONE), m - 1));
 
+/* Le cifre utili di un numero locale: via spazi, trattini, parentesi e lo
+   zero iniziale che in mezza Europa si scrive e non si compone. */
+export const cifreLocali = (raw) => String(raw).replace(/[^0-9]/g, '').replace(/^0+/, '');
+
+/* Paese scelto + numero digitato → il numero in formato internazionale.
+
+   La parte delicata è capire se il numero digitato porta già il prefisso.
+   La regola ingenua — «se comincia con le cifre del prefisso, toglile» —
+   è sbagliata e lo dimostra un caso solo: 391 è un prefisso mobile
+   italiano vero, quindi «3912345678» è un numero legittimo che quella
+   regola trasformava in «+39 12345678», cioè in niente.
+
+   Qui si toglie il prefisso in due soli casi, entrambi non ambigui:
+     1. l'utente ha scritto esplicitamente un numero internazionale, col +
+        o con lo 00 davanti;
+     2. tenendo il prefisso il numero sarebbe TROPPO LUNGO per il paese
+        scelto, e togliendolo torna di una lunghezza valida.
+   Fuori da questi due casi le cifre restano quelle che sono: meglio un
+   errore visibile («un numero Italia ha fra 9 e 11 cifre») che un numero
+   accorciato in silenzio. */
+export const componiTelefono = (paese, numero) => {
+  const pref = String(paese?.prefisso ?? paese ?? '').replace(/[^0-9]/g, '');
+  const min = paese?.min ?? 6;
+  const max = paese?.max ?? 14;
+
+  const grezzo = String(numero).replace(/[^0-9+]/g, '');
+  const esplicito = grezzo.startsWith('+') || grezzo.startsWith('00');
+  let cifre = grezzo.replace(/^\+/, '').replace(/^00/, '');
+
+  const restante = cifre.slice(pref.length).replace(/^0+/, '');
+  const dopoIlTaglio = cifre.startsWith(pref) && pref.length > 0;
+  const troppoLungoCosi = cifre.replace(/^0+/, '').length > max;
+  const giustoSenza = restante.length >= min && restante.length <= max;
+
+  if (dopoIlTaglio && (esplicito || (troppoLungoCosi && giustoSenza))) cifre = cifre.slice(pref.length);
+
+  return `+${pref}${cifre.replace(/^0+/, '')}`;
+};
+
+/* Resta per i numeri già salvati e per quelli scritti a mano in un campo
+   solo (il recupero password). Se non c'è nessun prefisso, si assume +39. */
 export const normalizePhone = (raw) => {
   const digits = String(raw).replace(/[^0-9+]/g, '');
   if (digits.startsWith('+')) return digits;

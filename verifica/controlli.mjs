@@ -10,7 +10,10 @@
 
 import {
   sod, dayDiff, addGiorni, maxTs, daYmd, ymd, prossimaMedia,
+  componiTelefono, cifreLocali, ora,
 } from '../src/utils/format.js';
+import { finestre, distribuisci, tappeDaRiavviare } from '../src/utils/arretrate.js';
+import { PREFISSI } from '../src/data/prefissi.js';
 import { DAY } from '../src/constants.js';
 
 let passati = 0;
@@ -208,6 +211,114 @@ for (const partenza of [1, 2, 3, 5, 10, 20, 40, 60]) {
 }
 ok('prossimaMedia · non va mai sotto zero',
   [0.4, 1, 1.2].every((v) => prossimaMedia(v) >= 0));
+
+/* ------------------------------------------------------------------ */
+/* 8. Numero di telefono con prefisso scelto dall'utente                */
+/* ------------------------------------------------------------------ */
+/* Prima il codice appiccicava +39 a chiunque. Un numero rumeno o       */
+/* albanese — le due comunità straniere più numerose in Italia —        */
+/* diventava un numero italiano inesistente, e l'account restava        */
+/* irrecuperabile senza che niente lo segnalasse.                       */
+
+const IT = PREFISSI.find((p) => p.iso === 'IT');
+const RO = PREFISSI.find((p) => p.iso === 'RO');
+const US = PREFISSI.find((p) => p.iso === 'US');
+
+eq('Telefono · numero italiano scritto normale',
+  componiTelefono(IT, '333 123 4567'), '+393331234567');
+eq('Telefono · lo zero iniziale di un numero rumeno si toglie',
+  componiTelefono(RO, '0721 234 567'), '+40721234567');
+eq('Telefono · il prefisso non si raddoppia se è già nel numero incollato',
+  componiTelefono(IT, '+39 333 1234567'), '+393331234567');
+eq('Telefono · funziona anche col vecchio 00 al posto del +',
+  componiTelefono(IT, '0039 333 1234567'), '+393331234567');
+eq('Telefono · prefisso ripetuto senza il +: si toglie solo perché senza sarebbe troppo lungo',
+  componiTelefono(IT, '39 333 1234567'), '+393331234567');
+eq('Telefono · parentesi e trattini americani si ignorano',
+  componiTelefono(US, '(415) 555-0132'), '+14155550132');
+/* Il caso che rompeva la regola ingenua: 391 è un prefisso mobile italiano
+   vero, quindi queste cifre NON sono un prefisso duplicato. */
+eq('Telefono · un numero che comincia per 39 ma è di lunghezza valida resta intero',
+  componiTelefono(IT, '3912345678'), '+393912345678');
+eq('cifreLocali · toglie spazi, trattini e lo zero iniziale',
+  cifreLocali('0721 234-567'), '721234567');
+
+ok('Prefissi · nessun paese doppio',
+  new Set(PREFISSI.map((p) => `${p.iso}${p.prefisso}`)).size === PREFISSI.length);
+ok('Prefissi · tutti cominciano col + e hanno solo cifre',
+  PREFISSI.every((p) => /^\+\d{1,4}$/.test(p.prefisso)));
+ok('Prefissi · le lunghezze dichiarate sono sensate',
+  PREFISSI.every((p) => p.min >= 6 && p.max <= 14 && p.min <= p.max));
+eq('Prefissi · il primo della lista è l\'Italia', PREFISSI[0].iso, 'IT');
+
+/* ------------------------------------------------------------------ */
+/* 9. Sigarette arretrate                                              */
+/* ------------------------------------------------------------------ */
+/* Segnarne cinque insieme non deve produrre cinque timestamp identici: */
+/* su quei timestamp poggiano l'intervallo medio, la fascia oraria a    */
+/* rischio e il confine di giornata della classifica.                   */
+
+const pomeriggio = new Date(2026, 8, 15, 16, 30).getTime();   // martedì
+const disponibili = finestre(pomeriggio);
+
+ok('Arretrate · alle 16:30 non viene proposto "stasera"',
+  !disponibili.some((f) => f.id === 'sera'));
+ok('Arretrate · alle 16:30 vengono proposte stamattina, pomeriggio e ieri',
+  ['mattina', 'pomeriggio', 'ieri'].every((id) => disponibili.some((f) => f.id === id)));
+ok('Arretrate · nessuna finestra finisce nel futuro',
+  disponibili.every((f) => f.a <= pomeriggio));
+
+const mattina = new Date(2026, 8, 15, 9, 0).getTime();
+ok('Arretrate · alle 9 non viene proposto "nel pomeriggio"',
+  !finestre(mattina).some((f) => f.id === 'pomeriggio'));
+
+const fMattina = disponibili.find((f) => f.id === 'mattina');
+const cinque = distribuisci(5, fMattina, []);
+
+eq('Arretrate · ne produce esattamente quante ne chiedi', cinque.length, 5);
+ok('Arretrate · nessun timestamp ripetuto', new Set(cinque).size === 5);
+ok('Arretrate · stanno tutte dentro la finestra scelta',
+  cinque.every((t) => t >= fMattina.da && t <= fMattina.a));
+ok('Arretrate · sono in ordine e distanziate di almeno un minuto',
+  cinque.every((t, i) => i === 0 || t - cinque[i - 1] >= 60000));
+ok('Arretrate · cadono su minuti tondi, senza secondi',
+  cinque.every((t) => t % 60000 === 0));
+ok('Arretrate · non finiscono tutte nella stessa fascia oraria',
+  new Set(cinque.map((t) => new Date(t).getHours())).size > 1,
+  `ore: ${cinque.map((t) => ora(t)).join(' ')}`);
+
+/* il caso che romperebbe le etichette del registro: un minuto già occupato */
+const occupato = distribuisci(3, fMattina, []);
+const conScontro = distribuisci(3, fMattina, occupato);
+ok('Arretrate · non riusa un timestamp già presente nel registro',
+  conScontro.every((t) => !occupato.includes(t)),
+  `già presenti ${occupato.join(',')} — nuovi ${conScontro.join(',')}`);
+
+eq('Arretrate · una sola sigaretta cade a metà della finestra',
+  distribuisci(1, { da: 0, a: 60 * 60000 }, []), [30 * 60000]);
+
+const venti = distribuisci(20, fMattina, []);
+ok('Arretrate · regge anche venti sigarette senza uscire dalla finestra',
+  venti.length === 20 && new Set(venti).size === 20
+  && venti.every((t) => t >= fMattina.da && t <= fMattina.a));
+
+/* Il conto delle tappe del corpo riparte dall'ultima sigaretta. Segnare
+   adesso delle sigarette di IERI non deve azzerare le ore pulite di oggi:
+   sarebbe la punizione perfetta per chi mette in ordine il registro. */
+const oggiOtto = new Date(2026, 8, 15, 8, 0).getTime();
+const ieriSera = new Date(2026, 8, 14, 21, 0).getTime();
+const ieriPomeriggio = new Date(2026, 8, 14, 15, 0).getTime();
+
+eq('Tappe · sigarette di ieri non azzerano il conto di oggi',
+  tappeDaRiavviare([ieriSera, oggiOtto], [ieriPomeriggio]), null);
+eq('Tappe · una sigaretta più recente di tutte fa ripartire il conto',
+  tappeDaRiavviare([ieriSera], [oggiOtto]), oggiOtto);
+eq('Tappe · sul registro vuoto il conto parte comunque',
+  tappeDaRiavviare([], [ieriPomeriggio]), ieriPomeriggio);
+eq('Tappe · fra le nuove vince la più recente',
+  tappeDaRiavviare([ieriPomeriggio], [ieriSera, oggiOtto]), oggiOtto);
+eq('Tappe · una di ieri e una di oggi insieme fanno ripartire da quella di oggi',
+  tappeDaRiavviare([ieriPomeriggio], [ieriSera, oggiOtto]), oggiOtto);
 
 /* ------------------------------------------------------------------ */
 

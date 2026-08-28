@@ -1,20 +1,26 @@
+/* Barre morbide, non un grafico finanziario: angoli tondi, verde tenue,
+   e la colonna evidenziata piena. La riga tratteggiata del budget resta,
+   ma disegnata con il filo verde invece che con una linea d'allarme. */
 export default function Barre({ dati, budget, evidenzia }) {
   const max = Math.max(1, budget ?? 0, ...dati.map((d) => d.n));
+  const ALTEZZA = 96;
   return (
-    <div className="chart">
+    <div className="grafico">
       {budget != null && (
-        <div className="budget-line" style={{ bottom: 22 + (budget / max) * 84 }}>
-          <div className="budget-dash" />
-          <span className="budget-tag num">BUDGET {budget}</span>
+        <div className="grafico-budget" style={{ bottom: 26 + (budget / max) * ALTEZZA }}>
+          <div className="grafico-budget-linea" />
+          <span className="grafico-budget-tag num">max {budget}</span>
         </div>
       )}
-      <div className="bars">
+      <div className="grafico-colonne">
         {dati.map((d, i) => (
-          <div className="bar-col" key={i}>
-            <span className={`bar-value num ${d.futuro ? 'invisible' : ''}`}>{d.n}</span>
-            <div className={`bar ${d.futuro ? 'bar-future' : ''} ${evidenzia === i ? 'bar-today' : ''}`}
-              style={{ height: d.futuro ? 0 : Math.max(2, (d.n / max) * 84) }} />
-            <span className="bar-day">{d.label}</span>
+          <div className="grafico-col" key={i}>
+            <span className={`grafico-valore num ${d.futuro ? 'invisibile' : ''}`}>{d.n}</span>
+            <div
+              className={`grafico-barra ${d.futuro ? 'grafico-barra-futuro' : ''} ${evidenzia === i ? 'grafico-barra-oggi' : ''}`}
+              style={{ height: d.futuro ? 0 : Math.max(4, (d.n / max) * ALTEZZA) }}
+            />
+            <span className="grafico-giorno">{d.label}</span>
           </div>
         ))}
       </div>

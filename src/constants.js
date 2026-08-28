@@ -2,15 +2,19 @@
 /* CONFIG                                                              */
 /* ------------------------------------------------------------------ */
 
-/* I colori che si possono scegliere per il proprio avatar.
-   Sono tutti mezzi toni caldi e desaturati, scelti per due motivi:
-   1. vivono dentro la stessa luce del resto dell'app (vedi styles.css) —
-      un colore acceso qui dentro spaccherebbe l'atmosfera di ogni schermata
-      in cui compare una classifica;
-   2. sono abbastanza chiari da reggere le iniziali scritte in scuro sopra,
-      che è come li disegna .avatar-circle. */
-export const PALETTE = ['#D19A3E', '#C07054', '#8B9A60', '#A5717E', '#7E93A2', '#B3A184'];
-export const TRIGGER = ['stress', 'noia', 'caffè', 'dopo mangiato', 'con altri'];
+/* I colori dell'avatar. Sono tutti mezzi toni desaturati della stessa
+   famiglia della palette (vedi styles.css): un colore acceso qui dentro
+   spaccherebbe la calma di ogni schermata in cui compare una classifica.
+   Tutti reggono le iniziali in BIANCO sopra con almeno 5.8:1 di contrasto,
+   che è come li disegna .avatar. */
+export const PALETTE = ['#286B5A', '#2F6470', '#6B5470', '#7A5A3C', '#4F6B3A', '#8A5560'];
+
+/* Le situazioni che innescano. Servono a due cose insieme: sono le
+   etichette del registro ("cos'era?") e sono le chiavi dei se–allora.
+   La stessa lista compare dopo una ricaduta come «cosa è successo?»:
+   una risposta data lì diventa un dato nel registro, non una confessione
+   che finisce nel vuoto. */
+export const TRIGGER = ['stress', 'noia', 'alcol', 'con altri', 'abitudine', 'ansia', 'dopo mangiato'];
 export const RIDUZIONE = 0.15;              // −15% sulla media della settimana precedente
 export const ATTESA = 180;                  // secondi del "aspetta prima di accendere"
 export const DAY = 86400000;
@@ -93,9 +97,32 @@ export const TAPPE = [
 
 export const MANTRA = 'Non smettere mai di provare a smettere.';
 
-/* cosa dire quando qualcuno ricade: mai colpevolizzare, sempre rilanciare */
+/* Le quattro risposte del check-in. Ognuna porta da qualche parte:
+   non è un sondaggio, è uno smistamento. */
+export const UMORI = [
+  { id: 'bene', faccia: '🙂', testo: 'Sto bene', sub: 'Oggi non è un problema' },
+  { id: 'cosi', faccia: '😐', testo: 'Così così', sub: 'Ci penso, ma tengo' },
+  { id: 'voglia', faccia: '😣', testo: 'Ho voglia di fumare', sub: 'Superiamo insieme i prossimi minuti' },
+  { id: 'fatica', faccia: '😔', testo: 'Sto facendo fatica', sub: 'Vediamo cosa può aiutarti adesso' },
+];
+
+/* La riga sotto il numero grande della Home. Cambia ogni giorno (indice
+   dal giorno di percorso, non a caso: due aperture nello stesso giorno
+   devono dire la stessa cosa, altrimenti sembra una slot machine). */
+export const FRASI = [
+  'Un passo alla volta.',
+  'Stai costruendo una nuova abitudine.',
+  'Non devi essere perfetto.',
+  'Devi solo affrontare il prossimo momento.',
+  'Guarda quanto sei arrivato lontano.',
+  'Il corpo se ne sta già accorgendo.',
+  'Quello che stai facendo è difficile. Lo stai facendo.',
+];
+
+/* Cosa dire quando qualcuno ricade: mai colpevolizzare, mai contare
+   quello che ha perso, sempre rimettere davanti quello che resta. */
 export const RILANCI = [
-  'Una sigaretta non cancella quello che hai fatto prima. Riparti da adesso, non da lunedì.',
+  'Quei giorni non sono andati persi. Sono già dentro di te.',
   'Quasi nessuno smette al primo tentativo. Chi ce la fa è chi ci riprova.',
   'Questa è una caduta, non la fine. Il conto riparte, il percorso no.',
   'Il tempo che avevi tenuto resta tuo: il corpo non te lo toglie indietro.',
@@ -112,4 +139,13 @@ export const CONSIGLI = [
   'Lavati i denti o mangia qualcosa di aspro: cambia il sapore che stai cercando.',
 ];
 
-export const MOTIVI = ['Per i miei figli', 'Per la salute', 'Per i soldi', 'Per l\u2019odore', 'Per riprendere fiato'];
+/* Perché vuoi smettere: le sei risposte dell'onboarding. L'icona serve
+   a rendere la scelta leggibile in mezzo secondo, non a decorare. */
+export const MOTIVI = [
+  { id: 'salute', icona: '🫁', testo: 'Per la salute', frase: 'Voglio tornare a respirare bene.' },
+  { id: 'soldi', icona: '💶', testo: 'Per i soldi', frase: 'Non voglio più bruciare quei soldi.' },
+  { id: 'famiglia', icona: '🏠', testo: 'Per la famiglia', frase: 'Per le persone con cui vivo.' },
+  { id: 'liberta', icona: '🕊️', testo: 'Per la libertà', frase: 'Non voglio più dipendere da niente.' },
+  { id: 'sport', icona: '🏃', testo: 'Per lo sport', frase: 'Voglio riprendere fiato quando corro.' },
+  { id: 'altro', icona: '✍️', testo: 'Un altro motivo', frase: '' },
+];
