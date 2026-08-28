@@ -14,4 +14,5 @@ export { default as Timeline } from './Timeline';
 export { default as UmoreFoglio } from './UmoreFoglio';
 export { default as AggiungiTante } from './AggiungiTante';
 export { default as CampoTelefono } from './CampoTelefono';
+export { default as FattoConIA } from './FattoConIA';
 export { default as FaseStop, faseStop } from './FaseStop';

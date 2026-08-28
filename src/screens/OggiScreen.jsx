@@ -51,7 +51,10 @@ export default function OggiScreen({
   const inStop = senza !== null && senza >= 12 * ORA;
   const frase = FRASI[giorniPercorso % FRASI.length];
 
-  const evitate = conti ? Math.floor(Math.abs(conti.evitate)) : null;
+  /* Arrotondato, non troncato: qui la cifra sta accanto agli euro e chi
+     moltiplica deve trovarsi. Il valore con un decimale sta nel Percorso,
+     dove c'è lo spazio per dichiarare anche il prezzo unitario. */
+  const evitate = conti ? Math.round(conti.evitateMostrate) : null;
 
   return (
     <div className="screen">

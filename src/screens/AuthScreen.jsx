@@ -1,5 +1,5 @@
 import { Eye, EyeOff } from 'lucide-react';
-import { BrandMark, Pianta, CampoTelefono } from '../components';
+import { BrandMark, Pianta, CampoTelefono, FattoConIA } from '../components';
 
 export default function AuthScreen(props) {
   const {
@@ -110,6 +110,8 @@ export default function AuthScreen(props) {
         Registri solo le tue sigarette. Se entri in un gruppo, gli altri vedono i tuoi conteggi:
         è quello il patto che rende la classifica utile.
       </p>
+
+      <FattoConIA />
     </div>
   );
 }

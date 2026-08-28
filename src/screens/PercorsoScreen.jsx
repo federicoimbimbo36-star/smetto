@@ -1,5 +1,5 @@
 import { Flag, X, ListPlus } from 'lucide-react';
-import { eurSegno, eur0, tempoVita, dec, durata, ora, etichettaGiorno } from '../utils/format';
+import { eur, eurSegno, eur0, tempoVita, dec, durata, ora, etichettaGiorno } from '../utils/format';
 import { Timeline, Barre, CurvaRisparmio, Pianta } from '../components';
 
 /* ------------------------------------------------------------------ */
@@ -97,14 +97,16 @@ export default function PercorsoScreen({
                 <div className="etichetta">{conti.inRosso ? 'Sopra il ritmo di partenza' : 'Risparmiato finora'}</div>
                 <div className="eroe-val num">{eurSegno(conti.risparmiato)}</div>
                 <p className="eroe-sub">
-                  {conti.evitate >= 1 ? (
-                    <>sono <b>{Math.floor(conti.evitate)}</b> sigarette che non hai fumato rispetto
-                      al ritmo da cui sei partito ({dec(conti.baseline)} al giorno)</>
-                  ) : conti.evitate <= -1 ? (
-                    <>sei <b>{Math.abs(Math.ceil(conti.evitate))}</b> sigarette sopra il ritmo da cui
-                      sei partito ({dec(conti.baseline)} al giorno). Il numero torna verde appena scendi.</>
-                  ) : (
+                  {conti.evitateMostrate < 0.1 ? (
                     <>sei in pari col ritmo da cui sei partito ({dec(conti.baseline)} al giorno)</>
+                  ) : conti.inRosso ? (
+                    <>sei <b>{dec(conti.evitateMostrate)}</b> sigarette sopra il ritmo da cui sei
+                      partito ({dec(conti.baseline)} al giorno), a {eur(conti.unitario)} l&apos;una.
+                      Il numero torna verde appena scendi.</>
+                  ) : (
+                    <>sono <b>{dec(conti.evitateMostrate)}</b> sigarette che non hai fumato rispetto
+                      al ritmo da cui sei partito ({dec(conti.baseline)} al giorno), a{' '}
+                      {eur(conti.unitario)} l&apos;una.</>
                   )}
                 </p>
                 <CurvaRisparmio punti={conti.curva} />
@@ -119,15 +121,28 @@ export default function PercorsoScreen({
                 <div className="etichetta">{conti.inRosso ? 'Vita bruciata in più' : 'Vita non bruciata'}</div>
                 <div className={`eroe-val num ${conti.inRosso ? 'spento' : ''}`}>{tempoVita(conti.minutiSalvati)}</div>
                 <p className="eroe-sub">
-                  A {conti.minutiPer} minuti per sigaretta, {conti.inRosso
-                    ? 'è il tempo che stai perdendo oltre a quello che perdevi già prima.'
-                    : 'sono i minuti che ti sei tenuto rispetto al ritmo da cui sei partito.'}
+                  Le stesse sigarette della card qui sopra, contate in tempo invece che in
+                  euro: {conti.minutiPer} minuti l&apos;una. {conti.inRosso
+                    ? 'È il tempo che stai perdendo oltre a quello che perdevi già prima.'
+                    : 'Sono i minuti che ti sei tenuto rispetto al ritmo da cui sei partito.'}
                 </p>
+                {/* Stessi tre periodi della card dei soldi, stessa natura di
+                    numero: le due card devono potersi leggere una accanto
+                    all'altra senza che i conti si contraddicano. */}
                 <div className="eroe-riga">
-                  <div><span className="num">{tempoVita(conti.minutiPersiTotali)}</span><small>persi in totale</small></div>
-                  <div><span className="num">{tempoVita(conti.minutiPersiOggi)}</span><small>persi oggi</small></div>
-                  <div><span className="num">{tempoVita(conti.minutiAnnoRitmo)}</span><small>in un anno così</small></div>
+                  <div><span className={`num ${conti.oggiVita < 0 ? 'spento' : ''}`}>{tempoVita(conti.oggiVita)}</span><small>oggi</small></div>
+                  <div><span className={`num ${conti.settimanaVita < 0 ? 'spento' : ''}`}>{tempoVita(conti.settimanaVita)}</span><small>questa settimana</small></div>
+                  <div><span className={`num ${conti.annoVita < 0 ? 'spento' : ''}`}>{tempoVita(conti.annoVita)}</span><small>in un anno così</small></div>
                 </div>
+                {/* Il costo pieno del fumo è un'altra cosa dal risparmio, e
+                    infatti sta fuori dalla riga: metterlo lì dentro era il
+                    bug — «in un anno così» voleva dire risparmiati nella
+                    card dei soldi e persi in questa. */}
+                <p className="eroe-sub" style={{ marginTop: 16 }}>
+                  Quello che il fumo ti costa comunque: <b>{tempoVita(conti.minutiPersiTotali)}</b> da
+                  quando hai cominciato, <b>{tempoVita(conti.minutiPersiOggi)}</b> oggi, e{' '}
+                  <b>{tempoVita(conti.minutiAnnoRitmo)}</b> all&apos;anno se resti al passo di adesso.
+                </p>
                 <p className="fonte">
                   Stima da Jackson, Jarvis e West, <i>The price of a cigarette: 20 minutes of life?</i>,
                   Addiction 2024 (UCL): 17 minuti per gli uomini, 22 per le donne. È una media di

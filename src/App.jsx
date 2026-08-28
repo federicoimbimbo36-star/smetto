@@ -8,6 +8,7 @@ import {
 import { readStore, writeStore } from './utils/storage';
 import auth from './auth';
 import { distribuisci, tappeDaRiavviare } from './utils/arretrate';
+import { calcolaConti } from './utils/conti';
 import { PREFISSO_DEFAULT } from './data/prefissi';
 import groups from './data/groups';
 import {
@@ -949,48 +950,10 @@ export default function App() {
 
   /* PARTE LEGGERA — pura aritmetica sui numeri già aggregati sopra: questa
      sì può girare a ogni tick di secondo senza mai toccare dati.cigs. */
-  const conti = useMemo(() => {
-    if (!contiBase) return null;
-    const adesso = Date.now();
-    const {
-      unit, minPer, baseline, oggiTs, inizioSett, mediaOra,
-      totCigs, oggiFumate, settFumate, curvaGiorni, startSod,
-    } = contiBase;
-
-    // giorni frazionari: è questo che fa muovere il contatore secondo per secondo
-    const giorniFraz = (adesso - startSod) / DAY;
-    const attese = baseline * giorniFraz;
-    const evitate = attese - totCigs;      // negativo se sei sopra il tuo ritmo
-
-    const fraOggi = (adesso - oggiTs) / DAY;
-    const oggiRisparmio = (baseline * fraOggi - oggiFumate) * unit;
-
-    const settGiorni = (adesso - inizioSett) / DAY;
-    const settimana = (baseline * settGiorni - settFumate) * unit;
-
-    const annoProiezione = (baseline - mediaOra) * 365 * unit;
-
-    // curva cumulativa: i conteggi giornalieri sono già pronti, resta solo
-    // da sommare e aggiustare la quota di "oggi" col tempo trascorso
-    let acc = 0;
-    const curva = curvaGiorni.map(({ n, label }, idx) => {
-      const isOggi = idx === curvaGiorni.length - 1;
-      const quota = isOggi ? fraOggi : 1;
-      acc += (baseline * quota - n) * unit;
-      return { v: acc, label };
-    });
-
-    return {
-      unitario: unit, minutiPer: minPer, baseline, evitate,
-      inRosso: evitate < 0,
-      risparmiato: evitate * unit,
-      minutiSalvati: evitate * minPer,
-      minutiPersiTotali: totCigs * minPer,
-      minutiPersiOggi: oggiFumate * minPer,
-      minutiAnnoRitmo: mediaOra * 365 * minPer,
-      oggiRisparmio, settimana, annoProiezione, curva,
-    };
-  }, [contiBase, tick, now]);
+  /* Il calcolo vive in utils/conti.js: è una funzione pura, quindi
+     verifica/controlli.mjs può controllarne la coerenza interna senza
+     montare React. Qui resta solo la memoizzazione. */
+  const conti = useMemo(() => calcolaConti(contiBase), [contiBase, tick, now]);
 
   const tappe = useMemo(() => {
     const quanto = (min) => {

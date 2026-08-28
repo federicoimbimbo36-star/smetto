@@ -164,6 +164,37 @@ invece di premiare solo l'astinenza totale.
 - **Le medaglie sono sparite dalla classifica.** Il primo posto è verde, gli
   altri sono neri, chi non registra da un giorno si spegne. Nessun podio.
 
+## Le cifre devono tornare
+
+Nel Percorso «Risparmiato finora» e «Vita non bruciata» sono la stessa cosa
+detta con due prezzi: quello in euro e quello in tempo. Stessi tre periodi,
+stesse posizioni, stessa natura di numero — un risparmio, cioè una differenza
+dal ritmo di partenza. Il calcolo sta in `src/utils/conti.js` ed è una funzione
+pura proprio perché `npm run verifica` possa controllare che le due card non si
+contraddicano mai.
+
+Il costo pieno del fumo — quanto perdi comunque, anche quando stai andando
+bene — è un'altra natura di numero, e infatti sta fuori da quelle righe, in una
+frase che dice esplicitamente cos'è.
+
+## La nota sull'IA
+
+Sotto l'accesso c'è una riga toccabile che apre l'elenco degli assistenti usati
+per costruire l'app (`src/components/FattoConIA.jsx`).
+
+**Non ci sono i loghi, e non è una svista.** I marchi di Anthropic, Google,
+Moonshot e OpenAI sono registrati, e le loro linee guida vietano usi che
+suggeriscano un rapporto o un'approvazione inesistenti — che è esattamente come
+si legge una schermata «fatto con» piena di loghi altrui, su un'app pubblicata
+sugli store. Citare i nomi è uso nominativo e dice la stessa cosa senza esporsi.
+Le sigle nei cerchi sono disegnate col carattere di Smetto e non assomigliano a
+nessun marchio. Per usare i loghi veri servono i press kit ufficiali e le loro
+regole: è una decisione da prendere, non da improvvisare.
+
+Il foglio dice anche la cosa che a chi usa un'app sulla salute interessa
+davvero: **dentro non gira nessuna IA**, quindi le sigarette registrate non
+finiscono in nessun modello.
+
 ## Accessibilità
 
 Non è una casella spuntata alla fine. `npm run verifica` esegue anche il

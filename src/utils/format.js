@@ -42,7 +42,9 @@ export const dec = (n) => n.toFixed(1).replace('.', ',');
 export const eur = (n) => `${n.toFixed(2).replace('.', ',')} €`;
 /* col segno esplicito: il meno tipografico, non il trattino */
 export const eurSegno = (n) => `${n < -0.004 ? '−' : ''}${Math.abs(n).toFixed(2).replace('.', ',')} €`;
-export const eur0 = (n) => `${Math.round(n).toLocaleString('it-IT')} €`;
+/* stesso meno tipografico di eurSegno: il trattino ASCII di toLocaleString
+   stonava accanto alle altre cifre negative della stessa riga */
+export const eur0 = (n) => `${n < -0.5 ? '−' : ''}${Math.round(Math.abs(n)).toLocaleString('it-IT')} €`;
 export const ymd = (ts) => {
   const d = new Date(ts);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;

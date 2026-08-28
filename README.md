@@ -18,20 +18,21 @@ quello lo puoi aprire dal telefono, se è sulla stessa rete di casa.
 npm run build     # produce dist/
 npm run preview   # serve dist/ come in produzione
 npm run lint
-npm run verifica  # calcoli + interfaccia: 996 controlli
+npm run verifica  # calcoli + interfaccia: 1034 controlli
 ```
 
 `npm run verifica` gira con Node puro, senza installare niente, e fa due giri.
 
-`verifica/controlli.mjs` (66) controlla i **calcoli**, sui punti dove i bug
+`verifica/controlli.mjs` (82) controlla i **calcoli**, sui punti dove i bug
 c'erano davvero — confini di giornata attorno al cambio d'ora, numerazione
 delle settimane del piano, calcolo del calo in classifica, composizione del
 numero di telefono col prefisso, collocazione oraria delle sigarette segnate in
-ritardo — ed è scritto in modo da **fallire** con il codice di prima. Deve girare con `TZ=Europe/Rome`,
+ritardo, coerenza fra le cifre delle due card del Percorso — ed è scritto in
+modo da **fallire** con il codice di prima. Deve girare con `TZ=Europe/Rome`,
 altrimenti quelli sull'ora legale non provano niente; lo script imposta il fuso
 da solo.
 
-`verifica/redesign.mjs` (930) controlla l'**interfaccia**: tag JSX e parentesi
+`verifica/redesign.mjs` (952) controlla l'**interfaccia**: tag JSX e parentesi
 bilanciate, componenti importati davvero, import mai usati, costanti usate prima
 di essere dichiarate, ogni classe scritta nel markup esistente in `styles.css`
 (e viceversa), contrasto WCAG AA di ogni coppia testo/fondo, bersagli tattili da
@@ -50,11 +51,12 @@ src/
 ├─ installStorage.js       definisce window.storage: database + cache locale
 ├─ windowStorage.js        la sola copia locale (Capacitor Preferences o localStorage)
 ├─ notificheTappe.js       notifiche programmate delle tappe
-├─ utils/    format.js · storage.js · arretrate.js (sigarette segnate in ritardo)
+├─ utils/    format.js · storage.js · conti.js (risparmi e minuti di vita)
+│            arretrate.js (sigarette segnate in ritardo)
 ├─ auth/     index.js (sceglie il backend) · supabaseAuth.js · supabaseClient.js · localAuth.js
 ├─ data/     groups.js     gruppi e classifica, su tabelle Supabase
 │            prefissi.js   i prefissi telefonici internazionali
-├─ components/             15 pezzi riusabili (Pianta, Respiro, Timeline, …)
+├─ components/             18 pezzi riusabili (Pianta, Respiro, Timeline, …)
 └─ screens/                le 4 schermate + gruppo + i 2 overlay
 
 public/                    icone, manifest della PWA

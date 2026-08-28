@@ -13,6 +13,7 @@ import {
   componiTelefono, cifreLocali, ora,
 } from '../src/utils/format.js';
 import { finestre, distribuisci, tappeDaRiavviare } from '../src/utils/arretrate.js';
+import { calcolaConti } from '../src/utils/conti.js';
 import { PREFISSI } from '../src/data/prefissi.js';
 import { DAY } from '../src/constants.js';
 
@@ -319,6 +320,102 @@ eq('Tappe · fra le nuove vince la più recente',
   tappeDaRiavviare([ieriPomeriggio], [ieriSera, oggiOtto]), oggiOtto);
 eq('Tappe · una di ieri e una di oggi insieme fanno ripartire da quella di oggi',
   tappeDaRiavviare([ieriPomeriggio], [ieriSera, oggiOtto]), oggiOtto);
+
+/* ------------------------------------------------------------------ */
+/* 11. Coerenza fra le due card del Percorso                            */
+/* ------------------------------------------------------------------ */
+/* «Risparmiato finora» e «Vita non bruciata» guardano lo stesso numero  */
+/* da due lati: se non tornano fra loro, l'app sta mentendo a chi la     */
+/* controlla con la calcolatrice — ed è la prima cosa che fa uno che ci  */
+/* crede poco.                                                          */
+
+const ADESSO = new Date(2026, 8, 15, 10, 0).getTime();
+const base = {
+  unit: 6 / 20,                                  // pacchetto da 6 €
+  minPer: 20,
+  baseline: 15,                                  // ritmo di partenza
+  mediaOra: 8,                                   // media degli ultimi 7 giorni
+  totCigs: 220,
+  oggiFumate: 5,
+  settFumate: 40,
+  oggiTs: new Date(2026, 8, 15, 0, 0).getTime(),
+  inizioSett: new Date(2026, 8, 13, 0, 0).getTime(),
+  startSod: new Date(2026, 7, 26, 0, 0).getTime(),
+  curvaGiorni: [{ n: 9, label: '13/9' }, { n: 8, label: '14/9' }, { n: 5, label: '15/9' }],
+};
+const c = calcolaConti(base, ADESSO);
+const vicino = (a, b, tolleranza) => Math.abs(a - b) <= tolleranza;
+
+ok('Conti · euro e minuti derivano dalle stesse sigarette evitate',
+  vicino(c.risparmiato / c.unitario, c.minutiSalvati / c.minutiPer, 1e-9),
+  `${c.risparmiato / c.unitario} vs ${c.minutiSalvati / c.minutiPer}`);
+
+ok('Conti · vita risparmiata + vita persa = vita che il ritmo di partenza costava',
+  vicino(c.minutiSalvati + c.minutiPersiTotali, c.baseline * ((ADESSO - base.startSod) / DAY) * c.minutiPer, 1e-6));
+
+/* Il numero mostrato deve poter essere moltiplicato a mano: prima le
+   schermate troncavano `evitate` per conto loro (86 invece di 86,25)
+   mentre gli euro restavano sul valore pieno, e 86 x 0,30 non faceva
+   25,88. Con un decimale lo scarto scende sotto il centesimo. */
+/* La tolleranza non è scelta a occhio: mostrando le sigarette con un
+   decimale, lo scarto massimo possibile è mezzo decimale per il prezzo
+   unitario, più l'arrotondamento al centesimo degli euro. Se il codice
+   sfora QUESTO limite, sta sbagliando davvero. */
+const scartoAmmesso = c.unitario * 0.05 + 0.005;
+ok('Conti · sigarette mostrate x prezzo = euro mostrati, entro l\'arrotondamento',
+  vicino(c.evitateMostrate * c.unitario, Math.abs(c.risparmiato), scartoAmmesso),
+  `${c.evitateMostrate} x ${c.unitario} = ${(c.evitateMostrate * c.unitario).toFixed(2)}, card ${Math.abs(c.risparmiato).toFixed(2)}`);
+
+ok('Conti · sigarette mostrate x minuti = vita mostrata, entro un minuto',
+  vicino(c.evitateMostrate * c.minutiPer, Math.abs(c.minutiSalvati), 1),
+  `${c.evitateMostrate * c.minutiPer} vs ${Math.abs(c.minutiSalvati)}`);
+
+/* Il bug che ha fatto nascere questi controlli: le due proiezioni a un
+   anno stavano nella stessa posizione di due card affiancate, con la
+   stessa etichetta, ma una era un risparmio e l'altra una perdita. */
+ok('Conti · le due proiezioni a un anno hanno lo stesso segno',
+  Math.sign(c.annoProiezione) === Math.sign(c.annoVita),
+  `soldi ${c.annoProiezione.toFixed(0)} · vita ${c.annoVita.toFixed(0)}`);
+
+ok('Conti · le due proiezioni a un anno parlano delle stesse sigarette',
+  vicino(c.annoProiezione / c.unitario, c.annoVita / c.minutiPer, 1e-6),
+  `${c.annoProiezione / c.unitario} vs ${c.annoVita / c.minutiPer}`);
+
+/* Le due card devono essere una il riflesso dell'altra: stessi tre
+   periodi, stessa natura, solo un prezzo diverso. È il controllo che
+   impedisce di rimetterci dentro una cifra di natura sbagliata. */
+for (const [periodo, soldi, vita] of [
+  ['finora', c.risparmiato, c.minutiSalvati],
+  ['oggi', c.oggiRisparmio, c.oggiVita],
+  ['questa settimana', c.settimana, c.settimanaVita],
+  ['in un anno così', c.annoProiezione, c.annoVita],
+]) {
+  ok(`Conti · «${periodo}» dice la stessa cosa in euro e in minuti`,
+    vicino(soldi / c.unitario, vita / c.minutiPer, 1e-6),
+    `${soldi / c.unitario} vs ${vita / c.minutiPer}`);
+}
+
+ok('Conti · la proiezione della vita NON è il valore assoluto perso',
+  Math.abs(c.annoVita - c.minutiAnnoRitmo) > 1,
+  'annoVita deve essere una differenza dal ritmo di partenza, non il totale perso');
+
+/* Chi sta peggiorando: i segni devono ribaltarsi tutti insieme. */
+const peggio = calcolaConti({ ...base, mediaOra: 20, totCigs: 400 }, ADESSO);
+ok('Conti · chi fuma più di prima ha risparmio, vita e proiezioni tutti negativi',
+  peggio.risparmiato < 0 && peggio.minutiSalvati < 0
+  && peggio.annoProiezione < 0 && peggio.annoVita < 0 && peggio.inRosso);
+ok('Conti · anche peggiorando, la vita persa in totale resta positiva',
+  peggio.minutiPersiTotali > 0 && peggio.minutiAnnoRitmo > 0);
+
+eq('Conti · le sigarette mostrate sono sempre positive, il segno lo porta l\'etichetta',
+  peggio.evitateMostrate > 0, true);
+
+/* La curva cumulativa deve finire sul risparmio dell'ultimo giorno, non
+   su un numero suo. */
+ok('Conti · la curva ha un punto per ogni giorno passato',
+  c.curva.length === base.curvaGiorni.length);
+ok('Conti · la curva è cumulativa, quindi monotòna quando si fuma meno del ritmo',
+  c.curva.every((p, i) => i === 0 || p.v >= c.curva[i - 1].v));
 
 /* ------------------------------------------------------------------ */
 
