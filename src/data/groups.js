@@ -22,7 +22,7 @@
 /* ------------------------------------------------------------------ */
 
 import { supabase } from '../auth/supabaseClient';
-import { ymd } from '../utils/format';
+import { ymd, maxTs } from '../utils/format';
 
 const ms = (iso) => (iso ? new Date(iso).getTime() : null);
 
@@ -54,6 +54,10 @@ function scheda(row) {
     lastEvent: row.last_event,
     lastResist: row.last_resist,
     lastAttivita: row.last_attivita,
+    /* Serve alla classifica per sapere se il silenzio di questo membro è
+       silenzio o astinenza dichiarata: senza, chi smette davvero e non
+       riapre l'app risulterebbe inattivo e uscirebbe dalla graduatoria. */
+    smessoDal: row.smesso_dal ?? null,
     updatedAt: ms(row.updated_at),
   };
 }
@@ -194,9 +198,13 @@ const groups = {
       resists,
       checkins,
       total: dati.cigs.length,
-      last_event: dati.cigs.length ? Math.max(...dati.cigs) : null,
-      last_resist: dati.resists.length ? Math.max(...dati.resists) : null,
-      last_attivita: eventi.length ? Math.max(...eventi) : null,
+      // maxTs e non Math.max(...lista): lo spread passa ogni elemento come
+      // argomento e su uno storico lungo raggiunge il limite del motore JS.
+      // La regola era già scritta in format.js, qui era rimasta l'eccezione.
+      last_event: maxTs(dati.cigs),
+      last_resist: maxTs(dati.resists),
+      last_attivita: maxTs(eventi),
+      smesso_dal: Number.isFinite(dati.smessoDal) ? dati.smessoDal : null,
     };
 
     const { error } = await supabase
@@ -212,7 +220,7 @@ const groups = {
     if (spento()) return [];
     const { data, error } = await supabase
       .from('group_members')
-      .select('user_id, name, color, days, resists, checkins, total, last_event, last_resist, last_attivita, updated_at')
+      .select('user_id, name, color, days, resists, checkins, total, last_event, last_resist, last_attivita, smesso_dal, updated_at')
       .eq('code', code);
     if (error || !data) return [];
     return data.map(scheda);

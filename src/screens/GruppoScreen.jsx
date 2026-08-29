@@ -152,13 +152,17 @@ export default function GruppoScreen(props) {
 
       {!ioAttivo && (
         <div className="avviso">
-          <b>Sei fuori dalla classifica.</b> Non registri da più di un giorno: per rientrare basta
-          segnare una sigaretta o confermare che oggi sei a zero.
+          <b>Sei fuori dalla classifica.</b> Non dichiari la giornata da più di un giorno: per
+          rientrare basta segnare una sigaretta o confermare che oggi sei a zero.
         </div>
       )}
 
       <div className="segmenti" role="tablist">
-        {[['giorno', 'Oggi'], ['settimana', 'Settimana'], ['mese', 'Mese']].map(([id, label]) => (
+        {/* «7 giorni» e «30 giorni», non «Settimana» e «Mese»: sono finestre
+            mobili che finiscono oggi, non la settimana o il mese di
+            calendario, e il 3 del mese «Mese» comprendeva ancora quasi
+            tutto il mese precedente. */}
+        {[['giorno', 'Oggi'], ['settimana', '7 giorni'], ['mese', '30 giorni']].map(([id, label]) => (
           <button
             key={id} role="tab" aria-selected={periodo === id}
             className={`segmento ${periodo === id ? 'segmento-on' : ''}`}
@@ -189,9 +193,11 @@ export default function GruppoScreen(props) {
             <div className="classifica-nome">
               {m.name}{m.id === me.id ? ' (tu)' : ''}
               <div className="classifica-sub num">
-                {m.attivo
-                  ? (m.resists > 0 ? `${m.resists} voglie superate` : 'nessuna voglia registrata')
-                  : (m.lastAttivita ? `non registra da ${durata(Date.now() - m.lastAttivita)}` : 'non ha ancora registrato')}
+                {!m.attivo
+                  ? (m.lastAttivita ? `non registra da ${durata(Date.now() - m.lastAttivita)}` : 'non ha ancora registrato')
+                  : m.giorniPeriodo > 1
+                    ? `${m.dichiarati} giorni su ${m.giorniPeriodo} dichiarati`
+                    : (m.resists > 0 ? `${m.resists} voglie superate` : 'nessuna voglia registrata')}
               </div>
             </div>
             <div className="classifica-punti num">
@@ -205,8 +211,10 @@ export default function GruppoScreen(props) {
         {ordine === 'meno'
           ? 'Conteggio grezzo del periodo scelto. A parità di sigarette passa avanti chi ha superato più voglie.'
           : 'Calo della media rispetto ai primi 7 giorni registrati: premia chi partiva da lontano.'}
+        {' '}Un giorno conta come dichiarato se ci sono sigarette registrate oppure se hai confermato
+        che eri a zero: uno zero costruito sul silenzio non vale come uno zero detto.
         {classifica.length > attivi.length && (
-          <> Chi non registra da 24 ore esce dalla classifica: senza dati il confronto non significa niente.</>
+          <> Chi non dichiara né oggi né ieri esce dalla classifica.</>
         )}
       </p>
 

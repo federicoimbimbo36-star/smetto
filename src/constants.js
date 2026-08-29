@@ -19,6 +19,45 @@ export const RIDUZIONE = 0.15;              // −15% sulla media della settiman
 export const ATTESA = 180;                  // secondi del "aspetta prima di accendere"
 export const DAY = 86400000;
 
+/* Quanto deve durare una pausa perché sia una RICADUTA e non una notte.
+   Era otto ore, e otto ore sono il sonno di chiunque: in trenta giorni di
+   fumo regolare fra le 7:30 e le 22:30 — nessuna sigaretta di notte, mai
+   una ricaduta vera — la schermata «Ripartiamo da qui» compariva 29 volte
+   e il contatore arrivava a «È la 29ª volta che riparti».
+   Venti ore non sono raggiungibili dormendo: per superarle bisogna aver
+   passato senza fumare quasi tutta una giornata di veglia, che è
+   esattamente la cosa che quella schermata vuole riconoscere. */
+export const SOGLIA_RICADUTA = 20 * 3600000;
+
+/* ------------------------------------------------------------------ */
+/*  TOLLERANZA DI COPERTURA — è una scelta di prodotto, non un dettaglio */
+/*  tecnico. Decide OGNI QUANTO devi farti vivo perché i contatori       */
+/*  continuino a correre durante la fase di riduzione.                  */
+/*                                                                      */
+/*  Ogni evento registrato — una sigaretta, una voglia superata, un      */
+/*  check-in «oggi zero» — certifica sé stesso e le ore qui sotto.       */
+/*  Quello che resta scoperto non produce risparmio, perché il silenzio  */
+/*  non è uno zero: se per dieci giorni non registri niente non vuol     */
+/*  dire che non hai fumato, vuol dire che non lo sappiamo.              */
+/*                                                                      */
+/*  Misurato su dieci giorni di silenzio, a 20 sigarette al giorno:      */
+/*     24h → 266,8 evitate ·  80,05 €                                   */
+/*     36h → 276,8 evitate ·  83,05 €                                   */
+/*     48h → 286,8 evitate ·  86,05 €   ← scelto                        */
+/*     72h → 306,8 evitate ·  92,05 €                                   */
+/*   nessuna → 436,8 evitate · 131,05 €  (45 € mai risparmiati)          */
+/*                                                                      */
+/*  48 ore coprono una notte più una giornata intera senza aprire l'app. */
+/*  Sotto si rischia di fermare il conto a chi sta andando bene; sopra    */
+/*  si finisce per pagare il silenzio. Chi passa giorni davvero senza     */
+/*  fumare tiene il conto vivo col check-in «oggi zero», e chi dichiara   */
+/*  di aver smesso esce del tutto da questa regola.                       */
+/*                                                                      */
+/*  QUESTO È L'UNICO POSTO in cui la tolleranza è definita: nessun altro */
+/*  calcolo deve averne una propria.                                     */
+/* ------------------------------------------------------------------ */
+export const TOLLERANZA_COPERTURA = 48 * 3600000;
+
 /* Jackson, Jarvis & West — "The price of a cigarette: 20 minutes of life?",
    Addiction (2024), studio UCL commissionato dal Dipartimento della Salute UK.
    Media 20 minuti per sigaretta: 17 per gli uomini, 22 per le donne.

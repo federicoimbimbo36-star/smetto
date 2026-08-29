@@ -18,21 +18,23 @@ quello lo puoi aprire dal telefono, se è sulla stessa rete di casa.
 npm run build     # produce dist/
 npm run preview   # serve dist/ come in produzione
 npm run lint
-npm run verifica  # calcoli + interfaccia: 1034 controlli
+npm run verifica  # calcoli + interfaccia: 1204 controlli
 ```
 
 `npm run verifica` gira con Node puro, senza installare niente, e fa due giri.
 
-`verifica/controlli.mjs` (82) controlla i **calcoli**, sui punti dove i bug
-c'erano davvero — confini di giornata attorno al cambio d'ora, numerazione
-delle settimane del piano, calcolo del calo in classifica, composizione del
-numero di telefono col prefisso, collocazione oraria delle sigarette segnate in
-ritardo, coerenza fra le cifre delle due card del Percorso — ed è scritto in
-modo da **fallire** con il codice di prima. Deve girare con `TZ=Europe/Rome`,
+`verifica/controlli.mjs` (235) controlla i **calcoli**, sui punti dove i bug
+c'erano davvero — confini di giornata attorno al cambio d'ora, ritmo di
+partenza che non deve muoversi, medie che non devono cambiare nel corso della
+giornata, una sola formula per le sigarette risparmiate, numerazione delle
+settimane del piano, calcolo del calo in classifica, soglia della ricaduta,
+composizione del numero di telefono col prefisso, collocazione oraria delle
+sigarette segnate in ritardo, coerenza fra le cifre delle due card del
+Percorso — ed è scritto in modo da **fallire** con il codice di prima. Deve girare con `TZ=Europe/Rome`,
 altrimenti quelli sull'ora legale non provano niente; lo script imposta il fuso
 da solo.
 
-`verifica/redesign.mjs` (952) controlla l'**interfaccia**: tag JSX e parentesi
+`verifica/redesign.mjs` (969) controlla l'**interfaccia**: tag JSX e parentesi
 bilanciate, componenti importati davvero, import mai usati, costanti usate prima
 di essere dichiarate, ogni classe scritta nel markup esistente in `styles.css`
 (e viceversa), contrasto WCAG AA di ogni coppia testo/fondo, bersagli tattili da
@@ -72,6 +74,19 @@ strumenti/genera-icone.py  rifà le icone PNG dal logo
 Home» dà un'app vera: icona propria, apertura a schermo intero, niente barra
 del browser. Le icone si rigenerano dal logo con
 `python3 strumenti/genera-icone.py` (serve Pillow).
+
+## Cosa è stato corretto
+
+`CORREZIONI.md` — la rilettura del 25 agosto: sedici bug, quasi tutti nel client.
+`AUDIT-MATEMATICO.md` — l'audit di tutti i calcoli e il registro delle
+correzioni: ritmo di partenza che si misurava da solo, medie che cambiavano nel
+corso della giornata, due formule per le stesse «sigarette risparmiate», soglia
+della ricaduta che contava le notti di sonno, silenzio contato come se fosse un
+giorno a zero.
+
+`REGOLE-MATEMATICHE.md` — le definizioni in vigore, una per una, con la tabella
+degli otto scenari e i numeri che l'app deve mostrare in ciascuno. Da leggere
+prima di toccare qualunque cosa produca una cifra.
 
 ## Pubblicarla
 

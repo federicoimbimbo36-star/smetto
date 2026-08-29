@@ -1,6 +1,6 @@
 import { Check, X, Plus, Sparkles, Undo2, ListPlus } from 'lucide-react';
 import { DAY, TRIGGER, FRASI } from '../constants';
-import { eur, eur0, eurSegno, durata, ora } from '../utils/format';
+import { eur, eur0, durata, ora } from '../utils/format';
 import { Pianta, FaseStop, Motto } from '../components';
 
 const ORA = 3600000;
@@ -33,8 +33,11 @@ function saluto(now) {
   return 'Buonasera';
 }
 
-function eroeDa(senza) {
-  if (senza === null) return { n: '—', unita: null, label: 'il percorso inizia col primo tocco' };
+function eroeDa(grezzo) {
+  if (grezzo === null) return { n: '—', unita: null, label: 'il percorso inizia col primo tocco' };
+  // mai negativo: se l'orologio del telefono viene spostato indietro,
+  // l'ultima sigaretta finisce nel futuro e qui usciva «−1 min senza fumare»
+  const senza = Math.max(0, grezzo);
   if (senza < ORA) return { n: Math.floor(senza / 60000), unita: 'min', label: 'senza fumare' };
   if (senza < DAY) return { n: Math.floor(senza / ORA), unita: 'ore', label: 'senza fumare' };
   const g = Math.floor(senza / DAY);
@@ -45,16 +48,23 @@ export default function OggiScreen({
   nome, s, conti, now, giorniPercorso, ultimoTs, gruppi, tappaBanner, onChiudiBanner,
   checkedIn, lotto, onFuma, onUmore, onTante, onAnnullaLotto, onVediRegistro,
   onAnnulla, onTag, onSkipTag, onVaiAlPercorso,
+  rif, prossimaTappa, copertoOra, inAstinenza, onCheckin,
 }) {
-  const senza = s?.ultima ? now - s.ultima : null;
+  /* Dal RIFERIMENTO, non dall'ultima sigaretta: sono la stessa cosa finché
+     i giorni sono certificati, ma chi dichiara di aver smesso senza aver mai
+     registrato niente prima non aveva nessun contatore. */
+  const senza = rif ? Math.max(0, now - rif) : null;
   const eroe = eroeDa(senza);
   const inStop = senza !== null && senza >= 12 * ORA;
   const frase = FRASI[giorniPercorso % FRASI.length];
 
-  /* Arrotondato, non troncato: qui la cifra sta accanto agli euro e chi
-     moltiplica deve trovarsi. Il valore con un decimale sta nel Percorso,
-     dove c'è lo spazio per dichiarare anche il prezzo unitario. */
-  const evitate = conti ? Math.round(conti.evitateMostrate) : null;
+  /* Arrotondato UNA VOLTA SOLA, e non qui: `scartoIntero` arriva già fatto
+     dai conti. Riarrotondando quello a un decimale, 86,46 diventava 86,5 e
+     poi 87, mentre il valore vero è 86: la Home e il Percorso mostravano
+     due cifre diverse per la stessa quantità. Il valore con un decimale sta
+     nel Percorso, dove c'è lo spazio per dichiarare anche il prezzo
+     unitario. */
+  const evitate = conti ? conti.scartoIntero : null;
 
   return (
     <div className="screen">
@@ -106,8 +116,13 @@ export default function OggiScreen({
               {conti.inRosso ? 'sigarette sopra il tuo ritmo' : 'sigarette non fumate'}
             </span>
           </span>
+          {/* Mai un meno davanti alla parola «risparmiati»: sono due numeri
+              diversi, e sono tutti e due positivi. Chi sta sopra il proprio
+              ritmo legge «12,40 € spesi in più», non «−12,40 € risparmiati». */}
           <span className="oggi-cifra">
-            <span className="oggi-cifra-val num">{eurSegno(conti.risparmiato)}</span>
+            <span className="oggi-cifra-val num">
+              {eur(conti.inRosso ? conti.spesoInPiu : conti.risparmiato)}
+            </span>
             <span className="oggi-cifra-lab">{conti.inRosso ? 'spesi in più' : 'risparmiati'}</span>
           </span>
         </button>
@@ -122,7 +137,7 @@ export default function OggiScreen({
               {s.oggi === 0
                 ? 'oggi, confermato'
                 : <>oggi{s.budget !== null && <> · il tuo massimo è {s.budget}</>}
-                  {conti && <> · {eur(s.oggi * conti.unitario)}</>}</>}
+                  {conti && <> · {eur(s.oggi * conti.unitario)} spesi</>}</>}
             </div>
             {s.oggi > 0 && (
               <div className="oggi-segni" aria-hidden="true">
@@ -194,23 +209,49 @@ export default function OggiScreen({
 
       {inStop && !ultimoTs && <FaseStop ms={senza} />}
 
-      {s && s.prossimaTappa && !ultimoTs && (
+      {prossimaTappa && !ultimoTs && (
         <button className="card card-tocco stacco" onClick={onVaiAlPercorso}>
           <div className="card-riga">
             <span className="banner-icona banner-icona-tenue"><Check size={16} /></span>
             <span className="card-riga-corpo">
-              <span className="banner-titolo" style={{ display: 'block' }}>{s.prossimaTappa.titolo}</span>
+              <span className="banner-titolo" style={{ display: 'block' }}>{prossimaTappa.titolo}</span>
               <span className="banner-testo" style={{ display: 'block' }}>
-                tra {durata(s.prossimaTappa.mancano)} · {s.prossimaTappa.testo}
+                tra {durata(prossimaTappa.mancano)} · {prossimaTappa.testo}
               </span>
             </span>
           </div>
         </button>
       )}
 
-      {conti && conti.annoProiezione > 0 && !ultimoTs && (
+      {/* IL CONTATORE FERMO NON È UN ERRORE, ed è la cosa che va detta prima
+          che qualcuno pensi che l'app si sia rotta. Durante la riduzione i
+          conti corrono solo sul tempo che qualcuno ha certificato: il
+          silenzio non è uno zero, e due giorni senza dire niente non sono
+          due giorni senza fumare. Basta un tocco per ripartire. */}
+      {conti && !copertoOra && !inAstinenza && !ultimoTs && (
+        <div className="card stacco">
+          <div className="card-riga">
+            <span className="banner-icona banner-icona-tenue"><Check size={16} /></span>
+            <span className="card-riga-corpo">
+              <span className="banner-titolo" style={{ display: 'block' }}>
+                I conti sono in pausa
+              </span>
+              <span className="banner-testo" style={{ display: 'block' }}>
+                Sono passate più di 48 ore dall&apos;ultima cosa che mi hai detto, e senza sapere
+                com&apos;è andata non posso contare quei giorni come risparmio. Segna una sigaretta,
+                oppure conferma che sei a zero, e riparte tutto da lì.
+              </span>
+            </span>
+          </div>
+          <button className="btn btn-secondario btn-piccolo" onClick={onCheckin}>
+            Confermo: oggi zero
+          </button>
+        </div>
+      )}
+
+      {conti && conti.risparmioAnno != null && conti.risparmioAnno > 0 && !ultimoTs && (
         <p className="nota" style={{ textAlign: 'center', marginTop: 32 }}>
-          Di questo passo, in un anno: {eur0(conti.annoProiezione)}.
+          Di questo passo, in un anno: {eur0(conti.risparmioAnno)}.
         </p>
       )}
 

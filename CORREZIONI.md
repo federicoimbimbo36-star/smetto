@@ -155,3 +155,17 @@ funzioni. Ora stanno in `supabase/migrations/`, identiche a quelle applicate.
 - Il recupero password via SMS: resta non funzionante per il motivo già
   documentato (il numero non è legato ad `auth.users`), e l'app continua a
   dirlo invece di far aspettare un codice che non arriverebbe.
+
+---
+
+## Poi è arrivato l'audit matematico
+
+Questa rilettura guardava il codice. Quella successiva ha guardato i **numeri**,
+eseguendoli invece di leggerli: i `useMemo` di `App.jsx` replicati fuori da
+React per confrontare quello che il codice produce con quello che sarebbe
+corretto. Ne sono usciti cinque problemi critici che questa rilettura non aveva
+visto, perché non erano bug di codice ma di modello — il ritmo di partenza che
+si misurava da solo, le medie che cambiavano nel corso della giornata, due
+formule diverse per le stesse «sigarette risparmiate».
+
+Il registro completo sta in `AUDIT-MATEMATICO.md`.

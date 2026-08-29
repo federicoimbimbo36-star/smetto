@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Mail, Phone, Download, LogOut, Trash2, ChevronRight } from 'lucide-react';
 import { PALETTE } from '../constants';
 import { AvatarCircle, Chip, Pianta } from '../components';
-import { eurSegno, dec } from '../utils/format';
+import { eur, dec } from '../utils/format';
 
 /* ------------------------------------------------------------------ */
 /*  PROFILO                                                            */
@@ -27,6 +27,7 @@ export default function ProfiloScreen({
   onSave, onRecovery, onChangePassword, onDelete, onLogout, onResetLog,
   totale, notifiche, onToggleNotifiche, avvisiCorpo, onToggleCorpo, profile, onProfileChange,
   onExportJSON, onExportCSV, start, conti, giorniPercorso, motivo, onModificaMotivo, obiettivo,
+  smessoDal, giorniSenza, onDichiaraSmesso, onAnnullaSmesso,
 }) {
   /* I campi numerici tengono una BOZZA di testo, non il numero: se si
      riconverte a ogni tasto, appena si scrive la virgola di "6,50" il
@@ -36,6 +37,9 @@ export default function ProfiloScreen({
     profile.prezzoPacchetto == null ? '' : String(profile.prezzoPacchetto).replace('.', ','),
   );
   const [perPacchettoDraft, setPerPacchettoDraft] = useState(String(profile.perPacchetto ?? 20));
+  const [baselineDraft, setBaselineDraft] = useState(
+    profile.baseline == null ? '' : String(profile.baseline).replace('.', ','),
+  );
 
   useEffect(() => {
     setPrezzoDraft(profile.prezzoPacchetto == null ? '' : String(profile.prezzoPacchetto).replace('.', ','));
@@ -43,18 +47,62 @@ export default function ProfiloScreen({
   useEffect(() => {
     setPerPacchettoDraft(String(profile.perPacchetto ?? 20));
   }, [profile.perPacchetto]);
+  useEffect(() => {
+    setBaselineDraft(profile.baseline == null ? '' : String(profile.baseline).replace('.', ','));
+  }, [profile.baseline]);
+
+  /* CAMBIARE PREZZO O RITMO RISCRIVE LO STORICO, e va detto prima di
+     salvare, non dopo. Non esiste uno storico dei prezzi: tutte le
+     sigarette del passato vengono ricalcolate al valore nuovo, quindi il
+     totale risparmiato cambia di colpo. È una semplificazione consapevole
+     (l'alternativa è una tabella di prezzi datati), ma vedersela applicare
+     senza preavviso fa sembrare che l'app abbia perso i conti. */
+  const [avviso, setAvviso] = useState(null);
+
+  const confermaConAvviso = (campo, valore, testoAvviso) => {
+    const attuale = profile[campo] ?? null;
+    if (attuale !== null && valore !== null && attuale !== valore && totale > 0) {
+      setAvviso({ campo, valore, testo: testoAvviso });
+      return false;
+    }
+    onProfileChange(campo, valore);
+    return true;
+  };
 
   const confermaPrezzo = () => {
     const n = Number(prezzoDraft.replace(',', '.'));
     const valido = Number.isFinite(n) && n > 0 ? n : null;
-    onProfileChange('prezzoPacchetto', valido);
-    setPrezzoDraft(valido == null ? '' : String(valido).replace('.', ','));
+    const fatto = confermaConAvviso('prezzoPacchetto', valido,
+      'Il nuovo prezzo vale anche per le sigarette già registrate: non tengo uno storico dei prezzi, quindi il totale risparmiato verrà ricalcolato tutto al valore nuovo.');
+    if (fatto) setPrezzoDraft(valido == null ? '' : String(valido).replace('.', ','));
   };
   const confermaPerPacchetto = () => {
     const n = Math.round(Number(perPacchettoDraft));
     const valido = Number.isFinite(n) && n > 0 ? n : 20;
     onProfileChange('perPacchetto', valido);
     setPerPacchettoDraft(String(valido));
+  };
+  const confermaBaseline = () => {
+    const n = Number(baselineDraft.replace(',', '.'));
+    const valido = Number.isFinite(n) && n > 0 ? n : null;
+    const fatto = confermaConAvviso('baseline', valido,
+      'Il ritmo di partenza è il metro con cui si misura tutto: cambiandolo si ricalcolano da capo le sigarette non fumate e i soldi risparmiati di tutto il percorso, non solo da oggi.');
+    if (fatto) setBaselineDraft(valido == null ? '' : String(valido).replace('.', ','));
+  };
+
+  const applicaAvviso = () => {
+    if (!avviso) return;
+    onProfileChange(avviso.campo, avviso.valore);
+    setAvviso(null);
+  };
+  const annullaAvviso = () => {
+    if (!avviso) return;
+    if (avviso.campo === 'prezzoPacchetto') {
+      setPrezzoDraft(profile.prezzoPacchetto == null ? '' : String(profile.prezzoPacchetto).replace('.', ','));
+    } else {
+      setBaselineDraft(profile.baseline == null ? '' : String(profile.baseline).replace('.', ','));
+    }
+    setAvviso(null);
   };
   const invio = (fn) => (e) => { if (e.key === 'Enter') fn(); };
 
@@ -83,9 +131,14 @@ export default function ProfiloScreen({
 
         {conti && (
           <div className="eroe-riga">
+            {/* Prima qui si leggeva letteralmente «−12,40 € risparmiati»:
+                l'etichetta era fissa e il numero aveva il segno. Sono due
+                grandezze diverse e sono tutte e due positive. */}
             <div>
-              <span className={`num ${conti.inRosso ? 'spento' : ''}`}>{eurSegno(conti.risparmiato)}</span>
-              <small>risparmiati</small>
+              <span className={`num ${conti.inRosso ? 'spento' : ''}`}>
+                {eur(conti.inRosso ? conti.spesoInPiu : conti.risparmiato)}
+              </span>
+              <small>{conti.inRosso ? 'spesi in più' : 'risparmiati'}</small>
             </div>
             <div><span className="num">{totale}</span><small>sigarette registrate</small></div>
             <div>
@@ -191,6 +244,62 @@ export default function ProfiloScreen({
           />
         </div>
       </div>
+      {/* ---- ho smesso ---- */}
+      <h2 className="titolo-sezione stacco">Il tuo stato</h2>
+      <div className="card">
+        {smessoDal ? (
+          <>
+            <div className="etichetta">Astinenza dichiarata</div>
+            <div className="eroe-val num">{giorniSenza ?? 0}</div>
+            <p className="eroe-sub">
+              {giorniSenza === 1 ? 'giorno' : 'giorni'} senza fumare, da quando me l&apos;hai detto
+              il {new Date(smessoDal).toLocaleDateString('it-IT', { day: 'numeric', month: 'long' })}.
+              I giorni si contano da soli: non devi confermare niente, devi solo dirmi se ricadi.
+            </p>
+            <button className="btn btn-secondario btn-piccolo" onClick={onAnnullaSmesso}>
+              Non è più così, sono tornato in riduzione
+            </button>
+          </>
+        ) : (
+          <>
+            <div className="etichetta">Stai riducendo</div>
+            <p className="testo-piccolo" style={{ marginTop: 8 }}>
+              Finché sei in riduzione i giorni contano solo se me li racconti: una sigaretta
+              registrata o un &laquo;oggi zero&raquo; confermato. Se invece hai smesso, dimmelo e
+              da quel momento i giorni senza fumare si contano da soli — e l&apos;unica cosa che
+              dovrai registrare è una ricaduta.
+            </p>
+            <button className="btn btn-secondario btn-piccolo" onClick={onDichiaraSmesso}>
+              Ho smesso di fumare
+            </button>
+          </>
+        )}
+      </div>
+
+      {avviso && (
+        <div className="card stacco">
+          <div className="etichetta">Questo cambia anche il passato</div>
+          <p className="testo-piccolo" style={{ marginTop: 8 }}>{avviso.testo}</p>
+          <div className="riga" style={{ marginTop: 12 }}>
+            <button className="btn btn-secondario btn-piccolo" onClick={annullaAvviso}>Lascia com&apos;era</button>
+            <button className="btn btn-primario btn-piccolo" onClick={applicaAvviso}>Ho capito, cambia</button>
+          </div>
+        </div>
+      )}
+
+      <div className="campo">
+        <label className="campo-label" htmlFor="p-base">Quante ne fumavi al giorno prima di iniziare</label>
+        <input
+          id="p-base" className="campo-input" type="number" inputMode="numeric" placeholder="Es. 15"
+          value={baselineDraft} onChange={(e) => setBaselineDraft(e.target.value)}
+          onBlur={confermaBaseline} onKeyDown={invio(confermaBaseline)}
+        />
+        <p className="nota">
+          È il metro con cui si misura tutto il resto, e non cambia più una volta impostato: se lo
+          lasci vuoto lo ricavo dalla tua prima settimana piena di registrazioni.
+        </p>
+      </div>
+
       <div className="campo">
         <label className="campo-label">Minuti di vita per sigaretta</label>
         <div className="pastiglie">

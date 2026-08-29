@@ -1,14 +1,19 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 
-import { PALETTE, DAY, MINUTI_PER_SIGARETTA, logKey, seenKey, FASCE, TAPPE, RILANCI } from './constants';
 import {
-  sod, dayDiff, ora, eur, ymd, dataBreve, prossimaMedia,
+  PALETTE, MINUTI_PER_SIGARETTA, logKey, seenKey, FASCE, TAPPE, RILANCI, SOGLIA_RICADUTA,
+} from './constants';
+import {
+  sod, dayDiff, ora, ymd, dataBreve, prossimaMedia,
   addGiorni, maxTs, daYmd, durata, componiTelefono, cifreLocali,
 } from './utils/format';
 import { readStore, writeStore } from './utils/storage';
 import auth from './auth';
 import { distribuisci, tappeDaRiavviare } from './utils/arretrate';
-import { calcolaConti } from './utils/conti';
+import {
+  calcolaConti, calcolaBaseline, intervalliCoperti, tempoCoperto,
+  riferimentoAstinenza, giorniSenzaFumare, giorniZeroCoperti, eRicaduta,
+} from './utils/conti';
 import { PREFISSO_DEFAULT } from './data/prefissi';
 import groups from './data/groups';
 import {
@@ -27,7 +32,7 @@ import './styles.css';
    ricreare l'array e il "vuoto" smette di essere vuoto per sempre, anche
    dopo un logout. Con la funzione ogni chiamata ha i suoi. */
 const vuotoLog = () => ({
-  v: 6, start: null, cigs: [], resists: [], tags: {}, checkins: [],
+  v: 7, start: null, smessoDal: null, cigs: [], resists: [], tags: {}, checkins: [],
   groups: [], notify: true, avvisiCorpo: true, onboarded: false,
   profile: { motivo: '', baseline: null, prezzoPacchetto: null, perPacchetto: 20, sesso: 'non_detto' },
   plans: {}, tappeViste: { ref: null, idx: [] }, ripartenze: 0,
@@ -115,10 +120,28 @@ export default function App() {
     }));
   }
 
+  /* Il registro arriva da fuori (storage, e un domani dall'import di un
+     backup JSON): prima di dargli in pasto l'aritmetica va ripulito.
+     Un `null` in mezzo alle sigarette veniva contato da `cigs.length` ma
+     saltato da tutti i filtri per giorno — due totali diversi sugli stessi
+     dati — e un `NaN` finiva a schermo come «NaN mesi» nel record.
+     Il Set toglie anche gli eventuali doppioni lasciati dal vecchio bug
+     della distribuzione delle arretrate: due sigarette non possono
+     condividere lo stesso millisecondo, perché su quel millisecondo sono
+     indicizzate le etichette del registro. */
+  const soloIstanti = (lista) => [...new Set(
+    (Array.isArray(lista) ? lista : []).filter((t) => Number.isFinite(t) && t > 0),
+  )].sort((a, b) => a - b);
+
   async function loadLog(uid) {
     const base = vuotoLog();
     const d = await readStore(logKey(uid), base);
     const merged = { ...base, ...d, profile: { ...base.profile, ...(d.profile || {}) } };
+    merged.cigs = soloIstanti(merged.cigs);
+    merged.resists = soloIstanti(merged.resists);
+    merged.checkins = soloIstanti(merged.checkins);
+    if (!Number.isFinite(merged.start) || merged.start <= 0) merged.start = merged.cigs[0] ?? null;
+    if (!Number.isFinite(merged.smessoDal) || merged.smessoDal <= 0) merged.smessoDal = null;
     // migrazione dalle versioni con un gruppo solo
     if (!merged.groups?.length && d.group) merged.groups = [d.group];
     delete merged.group;
@@ -630,17 +653,18 @@ export default function App() {
     const ts = Date.now();
     const precedente = maxTs(dati.cigs);
     const pausa = precedente ? ts - precedente : 0;
-    const ricaduta = precedente !== null && pausa >= 8 * 3600000;
+    /* La regola sta in conti.js, in un posto solo: durante un'astinenza
+       dichiarata qualsiasi sigaretta è una ricaduta, anche a tre ore dalla
+       precedente; fuori serve una pausa che una notte di sonno non possa
+       raggiungere. A otto ore contava i risvegli, e in trenta giorni di
+       fumo regolare il contatore arrivava a «è la 29ª volta che riparti». */
+    const ricaduta = eRicaduta(dati, ts, SOGLIA_RICADUTA);
 
     salva({
       ...dati,
       start: dati.start ?? ts,
       cigs: [...dati.cigs, ts],
       tappeViste: { ref: ts, idx: [] },              // il conto del corpo riparte
-      // Si conta una ripartenza esattamente quando mostriamo la schermata del
-      // rilancio, cioè da 8 ore in su. Prima la soglia qui era 24 ore, quindi
-      // "è la Nª volta che riparti" non contava le pause fra le 8 e le 24 ore
-      // che pure avevano fatto comparire quella schermata.
       ripartenze: (dati.ripartenze || 0) + (ricaduta ? 1 : 0),
     });
     setTappaBanner(null);
@@ -659,6 +683,46 @@ export default function App() {
       apriFinestra(ts);
       showToast('Registrata. Nessun problema, si continua.');
     }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  DICHIARARE DI AVER SMESSO                                          */
+  /*                                                                     */
+  /*  È la sola cosa che cambia il significato del silenzio. Finché sei   */
+  /*  in riduzione, un giorno senza registrazioni non dice niente e non   */
+  /*  produce risparmio. Da qui in poi il silenzio vuol dire «non ho      */
+  /*  fumato», e l'unica cosa che devi registrare è una ricaduta.         */
+  /*                                                                     */
+  /*  Non tocca niente altro: né le sigarette già registrate, né il ritmo */
+  /*  di partenza, né il prezzo, né `ripartenze`, né `start` (tranne per  */
+  /*  chi non ha mai registrato niente, dove la dichiarazione è l'inizio  */
+  /*  del percorso). Si può annullare, e si torna in riduzione.           */
+  /* ------------------------------------------------------------------ */
+  function dichiaraSmesso() {
+    const ts = Date.now();
+    const primaVolta = !dati.start;
+    salva({
+      ...dati,
+      start: dati.start ?? ts,
+      /* `?? ts`: dichiarare di nuovo mentre sei già dichiarato non sposta
+         niente. Spostando la data in avanti si perderebbe la copertura del
+         periodo precedente, e chi ricade e si rimette in carreggiata si
+         vedrebbe SCENDERE i soldi risparmiati — nello scenario provato,
+         nove euro in meno per aver detto «ci riprovo». La dichiarazione è
+         un impegno che resta: dopo una ricaduta il contatore dei giorni
+         riparte da solo dalla sigaretta, e non serve rifare niente.
+         Per azzerarla davvero si passa da «sono tornato in riduzione». */
+      smessoDal: dati.smessoDal ?? ts,
+      // chi parte da fermo non ha un'ultima sigaretta da cui far partire le
+      // tappe del corpo: il riferimento diventa la dichiarazione
+      tappeViste: primaVolta ? { ref: ts, idx: [] } : dati.tappeViste,
+    });
+    showToast('Da adesso i giorni senza fumare si contano da soli.');
+  }
+
+  function annullaSmesso() {
+    salva({ ...dati, smessoDal: null });
+    showToast('Sei tornato in riduzione: i giorni vanno di nuovo confermati.');
   }
 
   /* Le sigarette che uno si è dimenticato di segnare.
@@ -752,6 +816,22 @@ export default function App() {
     salva({ ...dati, start: dati.start ?? ts, resists: [...dati.resists, ts] });
   }
 
+  /* Il messaggio dopo una voglia superata annunciava «+20 min · +0,30 €».
+     Quei numeri non arrivavano da nessuna parte: le resistenze non entrano
+     nei conti — e non devono, perché il risparmio è già la differenza fra
+     il ritmo di partenza e quello che fumi davvero, quindi sommarle
+     significherebbe contarle due volte. Ma leggere dieci volte «+0,30 €»
+     e non trovare tre euro da nessuna parte è il modo più veloce per non
+     fidarsi più di nessun numero dell'app.
+     Adesso il messaggio dice una cosa che l'app tiene per davvero e che si
+     ritrova scritta nel Percorso: quante voglie hai superato in settimana. */
+  function toastVoglia() {
+    const n = (s?.resistSett ?? 0) + 1;
+    return n === 1
+      ? 'Voglia superata 🌱 · la prima di questa settimana'
+      : `Voglia superata 🌱 · ${n} questa settimana`;
+  }
+
   // dopo aver tolto una sigaretta dal registro, le tappe vanno riallineate
   // all'ultima rimasta (o annullate se non ne restano più).
   function riallineaTappe(cigsRimaste) {
@@ -760,24 +840,38 @@ export default function App() {
     else annullaTappe().catch(() => {});
   }
 
+  /* Toglie UNA sigaretta, non tutte quelle registrate in quell'istante.
+     `filter(t => t !== ts)` sembrava equivalente e non lo è: bastava un
+     doppione nel registro — e la vecchia distribuzione delle arretrate ne
+     produceva — perché un solo tocco sulla X ne cancellasse due, con tutti
+     i conteggi sbagliati da lì in poi e nessun modo di accorgersene.
+     L'etichetta si toglie solo se in quell'istante non resta niente. */
+  function togliUna(ts) {
+    const i = dati.cigs.indexOf(ts);
+    if (i === -1) return null;
+    const cigs = [...dati.cigs.slice(0, i), ...dati.cigs.slice(i + 1)];
+    const tags = { ...dati.tags };
+    if (!cigs.includes(ts)) delete tags[ts];
+    return { cigs, tags };
+  }
+
   function handleAnnulla() {
     if (!ultimoTs) return;
-    const tags = { ...dati.tags };
-    delete tags[ultimoTs];
-    const cigs = dati.cigs.filter((t) => t !== ultimoTs);
-    salva({ ...dati, cigs, tags });
-    riallineaTappe(cigs);
+    const next = togliUna(ultimoTs);
+    if (!next) { setUltimoTs(null); return; }
+    salva({ ...dati, ...next });
+    riallineaTappe(next.cigs);
     setUltimoTs(null);
   }
 
   function handleElimina(ts) {
-    const tags = { ...dati.tags };
-    delete tags[ts];
-    const cigs = dati.cigs.filter((t) => t !== ts);
-    salva({ ...dati, cigs, tags });
+    const next = togliUna(ts);
+    if (!next) return;
+    const eraLUltima = ts === maxTs(dati.cigs);
+    salva({ ...dati, ...next });
     if (ts === ultimoTs) setUltimoTs(null);
     // rilevante solo se abbiamo tolto proprio l'ultima sigaretta cronologica
-    if (ts === maxTs(dati.cigs)) riallineaTappe(cigs);
+    if (eraLUltima) riallineaTappe(next.cigs);
   }
 
   function handleTag(ts, t) {
@@ -807,8 +901,6 @@ export default function App() {
     const oggiTs = sod(now);
     const oggiList = cigs.filter((t) => t >= oggiTs);
     const oggi = oggiList.length;
-    const inizioIeri = addGiorni(oggiTs, -1);
-    const ieri = giorno >= 1 ? cigs.filter((t) => t >= inizioIeri && t < oggiTs).length : null;
 
     const settTot = cigs.filter((t) => t >= inizioSett).length;
     const media = settTot / giorniTrascorsi;
@@ -818,7 +910,10 @@ export default function App() {
     const mediaPrec = sett > 0 ? precCigs / 7 : null;
 
     const obiettivo = mediaPrec === null ? null : prossimaMedia(mediaPrec);
-    const budget = obiettivo === null ? null : Math.round(obiettivo);
+    /* floor e non round: la parola scritta accanto è «massimo». Con un
+       obiettivo di 11,9 l'arrotondamento concedeva un tetto di 12, cioè
+       più alto dell'obiettivo che sta cercando di far rispettare. */
+    const budget = obiettivo === null ? null : Math.floor(obiettivo);
 
     const perGiorno = Array.from({ length: 7 }, (_, i) => {
       const g = addGiorni(inizioSett, i);
@@ -830,10 +925,21 @@ export default function App() {
       };
     });
     const indiceOggi = perGiorno.findIndex((d) => dayDiff(d.ts, now) === 0);
-    const giorniSottoBudget = budget === null ? null : perGiorno.filter((d) => !d.futuro && d.n <= budget).length;
 
-    const giorni7 = Math.min(7, giorno + 1);
-    const media7 = cigs.filter((t) => t >= addGiorni(oggiTs, -(giorni7 - 1))).length / giorni7;
+    /* LA MEDIA DEI SETTE GIORNI PIENI, oggi escluso.
+       Prima oggi entrava al numeratore com'era — mezzo — e al denominatore
+       come giorno intero: la media usciva sempre più bassa del vero e
+       RISALIVA durante la giornata. Da lì la proiezione annuale in prima
+       pagina passava da 1.251 € all'una di notte a 1.095 € alle nove di
+       sera, con gli stessi identici dati e senza che l'utente avesse fatto
+       niente. Questa media alimenta anche `mediaOra` dei conti, quindi la
+       correzione vale per tutte e tre le proiezioni.
+       Con meno di un giorno pieno alle spalle non esiste ancora: null, e
+       chi la mostra scrive un trattino. */
+    const giorniPieni = Math.min(7, giorno);
+    const media7 = giorniPieni === 0
+      ? null
+      : cigs.filter((t) => t >= addGiorni(oggiTs, -giorniPieni) && t < oggiTs).length / giorniPieni;
 
     const perFascia = FASCE.map((f) => ({
       label: f.label.slice(0, 3),
@@ -850,41 +956,72 @@ export default function App() {
       intervalloMedio = gaps.reduce((a, b) => a + b, 0) / gaps.length;
     }
 
+    /* `taggateSett` è il denominatore giusto per «lo stress ti ha innescato
+       N sigarette su M»: dividere per il totale settimanale mescolava le
+       etichettate con quelle su cui non è stato detto niente, e faceva
+       sembrare ogni causa meno rilevante di quanto i dati dicano. */
     const conteggio = {};
+    let taggateSett = 0;
     cigs.filter((t) => t >= inizioSett).forEach((t) => {
       const g = dati.tags[t];
-      if (g) conteggio[g] = (conteggio[g] || 0) + 1;
+      if (g) { conteggio[g] = (conteggio[g] || 0) + 1; taggateSett += 1; }
     });
     const topTrigger = Object.entries(conteggio).sort((a, b) => b[1] - a[1])[0] || null;
 
-    const ultima = cigs.length ? cigs[cigs.length - 1] : null;
-    const minutiDaUltima = ultima ? (now - ultima) / 60000 : 0;
-    const idxTappa = TAPPE.findIndex((t) => t.min > minutiDaUltima);
-    const prossimaTappa = idxTappa >= 0 ? {
-      ...TAPPE[idxTappa],
-      mancano: (TAPPE[idxTappa].min - minutiDaUltima) * 60000,
-      progresso: idxTappa === 0
-        ? minutiDaUltima / TAPPE[0].min
-        : (minutiDaUltima - TAPPE[idxTappa - 1].min) / (TAPPE[idxTappa].min - TAPPE[idxTappa - 1].min),
-    } : null;
-
+    /* Quello che non finisce a schermo non sta qui dentro: `ieri`,
+       `giorniSottoBudget` e `resistOggi` erano calcolati a ogni render e
+       non li leggeva nessuno, cioè costo certo e rischio di divergere in
+       silenzio dal resto se un giorno qualcuno li avesse usati.
+       Anche `prossimaTappa` è uscita da qui: adesso parte dal riferimento
+       dell'astinenza e non dall'ultima sigaretta. */
     return {
-      giorno, sett, giorniTrascorsi, oggi, ieri, media, media7, mediaPrec, obiettivo, budget,
-      perGiorno, indiceOggi, giorniSottoBudget, settTot, perFascia, fasciaTop, fasciaTopIndex,
-      intervalloMedio, ultima, minutiDaUltima, prossimaTappa,
-      resistOggi: dati.resists.filter((t) => t >= oggiTs).length,
+      giorno, sett, giorniTrascorsi, oggi, media, media7, mediaPrec, obiettivo, budget,
+      perGiorno, indiceOggi, settTot, taggateSett, perFascia, fasciaTop, fasciaTopIndex,
+      intervalloMedio, ultima: cigs.length ? cigs[cigs.length - 1] : null,
       resistSett: dati.resists.filter((t) => t >= inizioSett).length,
       topTrigger,
     };
   }, [dati, now]);
 
-  /* Tappe del corpo: quando il tempo dall'ultima sigaretta supera una soglia,
+  /* LA COPERTURA — l'unione dei tratti di tempo in cui sappiamo davvero
+     cosa stava succedendo. Ricalcolata solo quando cambiano i dati, mai a
+     ogni tick: gli intervalli non sono tagliati su `adesso`, il taglio lo
+     fa `tempoCoperto` dentro i conti. */
+  const intervalli = useMemo(() => intervalliCoperti(dati), [dati]);
+
+  /* IL RIFERIMENTO — da quando dura il periodo senza fumare che mostriamo.
+     Un solo valore per il numero grande della Home, le tappe del corpo, il
+     record e la statistica «giorni senza fumare»: prima ognuno partiva per
+     conto suo dall'ultima sigaretta, e chi dichiarava di aver smesso senza
+     averne mai registrata una non aveva nessun contatore. */
+  const rif = useMemo(() => riferimentoAstinenza(dati, now, intervalli), [dati, now, intervalli]);
+  const giorniSenza = giorniSenzaFumare(rif, now);
+  const copertoOra = intervalli.some(([da, a]) => da <= now && now <= a);
+
+  /* Il banner della prossima tappa del corpo: sta fuori da `s` perché parte
+     dal riferimento dell'astinenza e non dall'ultima sigaretta, così chi
+     dichiara di aver smesso senza aver mai registrato niente ha comunque le
+     sue tappe. */
+  const prossimaTappa = useMemo(() => {
+    const minuti = rif ? Math.max(0, now - rif) / 60000 : 0;
+    const idxTappa = TAPPE.findIndex((t) => t.min > minuti);
+    if (idxTappa < 0) return null;
+    return {
+      ...TAPPE[idxTappa],
+      mancano: (TAPPE[idxTappa].min - minuti) * 60000,
+      progresso: idxTappa === 0
+        ? minuti / TAPPE[0].min
+        : (minuti - TAPPE[idxTappa - 1].min) / (TAPPE[idxTappa].min - TAPPE[idxTappa - 1].min),
+    };
+  }, [rif, now]);
+
+  /* Tappe del corpo: quando il tempo dal riferimento supera una soglia,
      parte la notifica. Se l'app è rimasta chiusa e ne sono passate più di una,
      avvisa solo della più alta ma le segna tutte come viste. */
   useEffect(() => {
-    if (!isAuthenticated || !dati || !s?.ultima) return;
-    const minuti = (now - s.ultima) / 60000;
-    const viste = dati.tappeViste?.ref === s.ultima ? (dati.tappeViste.idx || []) : [];
+    if (!isAuthenticated || !dati || !rif) return;
+    const minuti = (now - rif) / 60000;
+    const viste = dati.tappeViste?.ref === rif ? (dati.tappeViste.idx || []) : [];
     const nuove = TAPPE.map((t, i) => i).filter((i) => minuti >= TAPPE[i].min && !viste.includes(i));
     if (nuove.length === 0) return;
 
@@ -893,9 +1030,9 @@ export default function App() {
       notificaSistema(`${ultima.avviso} 🫁`, ultima.avvisoTesto);
       setTappaBanner(ultima);
     }
-    salva({ ...dati, tappeViste: { ref: s.ultima, idx: [...viste, ...nuove] } });
+    salva({ ...dati, tappeViste: { ref: rif, idx: [...viste, ...nuove] } });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [now, s?.ultima, isAuthenticated]);
+  }, [now, rif, isAuthenticated]);
 
   /* i due contatori: soldi e tempo, aggiornati ogni secondo */
   /* PARTE PESANTE — scandisce dati.cigs con dei filter(). Deve ricalcolare
@@ -908,45 +1045,74 @@ export default function App() {
      scattare il ricalcolo del useMemo qui sotto finché non cambia data. */
   const oggiChiave = sod(now);
   const media7 = s?.media7 ?? null;
+
+  /* Il ritmo di partenza si calcola in UN SOLO POSTO e da lì lo prendono
+     tutti. Prima la stessa formula era scritta due volte — qui e dentro
+     `mese` — e bastava toccarne una perché due schermate dessero due
+     risposte diverse alla stessa domanda. */
+  const ritmo = useMemo(
+    () => calcolaBaseline(dati?.profile, dati?.start, dati?.cigs || [], oggiChiave),
+    [dati?.profile, dati?.start, dati?.cigs, oggiChiave],
+  );
+
   const contiBase = useMemo(() => {
     if (!dati?.profile?.prezzoPacchetto || !dati.start) return null;
     const unit = dati.profile.prezzoPacchetto / (dati.profile.perPacchetto || 20);
     const minPer = MINUTI_PER_SIGARETTA[dati.profile.sesso || 'non_detto'];
     const oggiTs = oggiChiave;
-
-    // ritmo di partenza: quello dichiarato, altrimenti la media della prima settimana
     const giorniTot = dayDiff(dati.start, oggiTs) + 1;
-    const baseGiorni = Math.min(7, giorniTot);
-    const baseReale = dati.cigs.filter((t) => t < addGiorni(dati.start, baseGiorni)).length / baseGiorni;
-    const baseline = dati.profile.baseline || baseReale || 0;
 
     const oggiFumate = dati.cigs.filter((t) => t >= oggiTs).length;
 
     const inizioSett = addGiorni(oggiTs, -((giorniTot - 1) % 7));
     const settFumate = dati.cigs.filter((t) => t >= inizioSett).length;
 
-    const mediaOra = media7 ?? baseline;
+    /* Niente ripiego sulla baseline quando la media dei sette giorni pieni
+       non c'è ancora: `media7 ?? baseline` faceva uscire una proiezione di
+       zero euro presentata come se fosse una previsione. Meglio un
+       trattino, e `calcolaConti` lo propaga come null. */
+    const mediaOra = media7;
+
 
     // conteggio per giorno degli ultimi 14 giorni: i filter costosi girano
     // una volta al giorno, non una volta al secondo
     const giorniCurva = Math.min(14, giorniTot);
+    const inizioCurva = addGiorni(oggiTs, -(giorniCurva - 1));
     const curvaGiorni = [];
     for (let i = giorniCurva - 1; i >= 0; i -= 1) {
       const g = addGiorni(oggiTs, -i);
       const fine = addGiorni(g, 1);
       const n = dati.cigs.filter((t) => t >= g && t < fine).length;
-      curvaGiorni.push({ n, label: dataBreve(g) });
+      curvaGiorni.push({ n, da: g, a: fine, label: dataBreve(g) });
     }
+    // quante ne sono state fumate PRIMA della finestra della curva: serve a
+    // farla partire dal risparmio già accumulato invece che da zero
+    const totPrimaCurva = dati.cigs.filter((t) => t < inizioCurva).length;
 
     return {
-      unit, minPer, baseline, oggiTs, inizioSett, mediaOra, curvaGiorni,
-      totCigs: dati.cigs.length, oggiFumate, settFumate, startSod: sod(dati.start),
+      unit, minPer,
+      baseline: ritmo.valore,
+      baselinePronta: ritmo.pronta,
+      baselineDichiarata: ritmo.dichiarata,
+      startTs: dati.start,
+      // il tempo che i conti hanno il diritto di contare: il silenzio non
+      // certificato non produce risparmio
+      intervalli,
+      oggiTs, inizioSett, mediaOra, curvaGiorni, inizioCurva, totPrimaCurva,
+      totCigs: dati.cigs.length, oggiFumate, settFumate,
     };
     // `s` intero NON va nelle dipendenze: è un oggetto nuovo ogni 15 secondi
     // (dipende da `now`) e trascinava con sé tutti i filter costosi qui sopra.
     // Di `s` qui serve un solo numero, e quello basta come dipendenza.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dati, media7, oggiChiave]);
+  }, [dati, media7, oggiChiave, ritmo, intervalli]);
+
+  /* Perché la card dei Numeri è vuota, quando è vuota. Sono due cose
+     diverse e vanno dette in modo diverso: senza prezzo manca un dato che
+     si scrive in dieci secondi, senza ritmo di partenza manca una misura
+     che o si dichiara o richiede una settimana. */
+  const contiMancanti = !dati?.profile?.prezzoPacchetto
+    ? 'prezzo'
+    : (dati?.start && !ritmo.pronta ? 'ritmo' : null);
 
   /* PARTE LEGGERA — pura aritmetica sui numeri già aggregati sopra: questa
      sì può girare a ogni tick di secondo senza mai toccare dati.cigs. */
@@ -965,7 +1131,7 @@ export default function App() {
       const a = Math.round(g / 365);
       return a === 1 ? '1 anno' : `${a} anni`;
     };
-    const minuti = s?.ultima ? (now - s.ultima) / 60000 : 0;
+    const minuti = rif ? Math.max(0, now - rif) / 60000 : 0;
     const idx = TAPPE.findIndex((t) => t.min > minuti);
     return TAPPE.map((t, i) => ({
       ...t,
@@ -977,7 +1143,7 @@ export default function App() {
       // il singolare conta: la tappa dei 365 giorni scriveva «1 anni»
       quando: quanto(t.min),
     }));
-  }, [s?.ultima, now]);
+  }, [rif, now]);
 
   /* Il piano delle prossime settimane.
 
@@ -994,7 +1160,11 @@ export default function App() {
      comincia dalla prossima. */
   const piano = useMemo(() => {
     if (!dati) return null;
-    const base = s?.mediaPrec ?? s?.media ?? dati.profile?.baseline;
+    /* `ritmo.valore` e non `profile.baseline`: era l'ultima lettura diretta
+       rimasta: il piano scavalcava `calcolaBaseline`, quindi chi non aveva
+       dichiarato il ritmo non riceveva mai quello dedotto, e ripiegava su
+       `s.media` — che conta il giorno in corso come se fosse pieno. */
+    const base = s?.mediaPrec ?? s?.media ?? (ritmo.pronta ? ritmo.valore : null);
     if (!base || base <= 0) return null;
 
     const settCorrente = s?.sett ?? 0;
@@ -1019,8 +1189,14 @@ export default function App() {
       if (m < 0.5) break;
     }
 
-    // la prima settimana interamente a zero è quella dopo l'ultima del piano
-    const settZero = primaSett + righe.length;
+    /* La settimana a zero è l'ULTIMA RIGA del piano, non quella dopo.
+       Il ciclo inserisce la riga e poi esce, quindi quando l'obiettivo
+       scende sotto mezza sigaretta quella riga è già la settimana in cui
+       si arriva a zero. Contando una settimana in più, la card diceva
+       «sigaretta zero il 24 luglio» mentre la tabella sotto — nella stessa
+       card — mostrava S6 con obiettivo 0,00 sette giorni prima. */
+    const arrivaAZero = righe.length > 0 && righe[righe.length - 1].media < 0.5;
+    const settZero = primaSett + righe.length - (arrivaAZero ? 1 : 0);
     return {
       righe: righe.slice(0, 8),
       settimaneRestanti: Math.max(1, settZero - settCorrente),
@@ -1032,10 +1208,17 @@ export default function App() {
   const record = useMemo(() => {
     if (!dati?.cigs.length) return { piuLungo: null };
     const cigs = [...dati.cigs].sort((a, b) => a - b);
-    let piuLungo = now - cigs[cigs.length - 1];
+    /* La pausa in corso si misura dal RIFERIMENTO, non dall'ultima
+       sigaretta: sono la stessa cosa finché siamo coperti, ma dopo un buco
+       il riferimento è più prudente e il record non rivendica giorni che
+       nessuno ha certificato.
+       Math.max(0, …): con l'orologio del telefono spostato indietro
+       l'ultima sigaretta può risultare nel futuro, e una pausa negativa
+       usciva a schermo come «NaN mesi». */
+    let piuLungo = Math.max(0, now - (rif ?? cigs[cigs.length - 1]));
     for (let i = 1; i < cigs.length; i += 1) piuLungo = Math.max(piuLungo, cigs[i] - cigs[i - 1]);
     return { piuLungo };
-  }, [dati, now]);
+  }, [dati, now, rif]);
 
   const mese = useMemo(() => {
     if (!dati || !dati.start) return null;
@@ -1045,43 +1228,52 @@ export default function App() {
     const finestra30 = Math.min(30, giorniTot);
     const inizio30 = addGiorni(oggiTs, -(finestra30 - 1));
     const totale = cigs.filter((t) => t >= inizio30).length;
-    const media = totale / finestra30;
 
-    const inizioPrec30 = addGiorni(inizio30, -30);
-    const prec30 = cigs.filter((t) => t >= inizioPrec30 && t < inizio30).length;
-    const giorniPrec = Math.max(0, Math.min(30, giorniTot - finestra30));
-    const mediaPrec = giorniPrec > 0 ? prec30 / giorniPrec : 0;
-
-    const nSett = Math.min(5, Math.ceil(giorniTot / 7));
+    /* Quattro settimane e non cinque: cinque barre coprono 35 giorni,
+       mentre tutto il resto della sezione ne guarda 30. Due grafici
+       affiancati con due periodi diversi e nessuna etichetta che lo dica
+       sono due grafici che non si possono confrontare.
+       Ogni finestra è di GIORNI PIENI, oggi escluso: prima l'ultima barra
+       comprendeva la giornata in corso ma la divideva comunque per sette,
+       quindi era per forza più bassa delle altre e mostrava un calo che in
+       parte non era successo. */
+    const nSettPossibili = Math.floor(dayDiff(dati.start, now) / 7) + 1;
+    const nSett = Math.max(1, Math.min(4, nSettPossibili));
     const perSettimana = Array.from({ length: nSett }, (_, i) => {
       const idx = nSett - 1 - i;
-      const fine = addGiorni(oggiTs, -idx * 7 + 1);
+      const fine = addGiorni(oggiTs, -idx * 7);
       const inizio = addGiorni(fine, -7);
-      const validi = Math.max(1, Math.min(7, dayDiff(Math.max(inizio, sod(dati.start)), Math.min(fine - 1, oggiTs)) + 1));
-      const n = cigs.filter((t) => t >= inizio && t < fine).length;
-      return { label: idx === 0 ? 'ora' : `−${idx}s`, n: Math.round((n / validi) * 10) / 10, futuro: false };
+      const daQui = Math.max(inizio, sod(dati.start));
+      const validi = Math.max(1, Math.min(7, dayDiff(daQui, addGiorni(fine, -1)) + 1));
+      const n = cigs.filter((t) => t >= daQui && t < fine).length;
+      return { label: idx === 0 ? '7g' : `−${idx}s`, n: Math.round((n / validi) * 10) / 10, futuro: false };
     });
 
-    const perGiornoMese = Array.from({ length: finestra30 }, (_, i) => {
-      const g = addGiorni(inizio30, i);
-      const fine = addGiorni(g, 1);
-      return { ts: g, n: cigs.filter((t) => t >= g && t < fine).length };
-    });
-    const giorniZero = perGiornoMese.filter((d) => d.n === 0).length;
+    /* Solo giorni COMPLETI e COPERTI: oggi non è finito, e un giorno in cui
+       l'app non ha saputo niente non è un giorno a zero, è un giorno
+       ignoto. Senza questa condizione, sparire era il modo più veloce per
+       collezionare giorni a zero. */
+    const giorniZero = giorniZeroCoperti(dati, now, intervalli, finestra30);
 
-    /* Stesso ritmo di partenza usato dai contatori nella schermata Piano:
-       prima qui si usava sempre e solo la media dei primi giorni registrati,
-       ignorando il valore dichiarato nell'onboarding. Risultato: chi aveva
-       detto «ne fumo 20» e ne aveva registrate 12 la prima settimana si
-       vedeva due numeri di "sigarette risparmiate" diversi in due schermate
-       della stessa app. */
-    const baseGiorni = Math.min(7, giorniTot);
-    const baseReale = cigs.filter((t) => t < addGiorni(dati.start, baseGiorni)).length / baseGiorni;
-    const baseline = dati.profile?.baseline || baseReale || 0;
-    const risparmiate = Math.max(0, Math.round(baseline * finestra30 - totale));
+    /* LA STESSA FORMULA DEI CONTATORI, non una seconda versione.
+       Qui c'era un secondo calcolo delle «sigarette risparmiate» che
+       contava i giorni interi mentre `conti` li conta frazionari: con meno
+       di trenta giorni di storico i due coprono lo stesso identico periodo
+       e davano numeri diversi nella stessa schermata — «sono 107 sigarette
+       che non hai fumato» due centimetri sopra «in questo mese hai fumato
+       117 sigarette in meno». Adesso passa da `atteseFra`, che è la
+       funzione che usano anche i contatori, con la stessa baseline. */
+    const risparmiate = ritmo.pronta
+      ? Math.max(0, Math.round(
+        ritmo.valore * tempoCoperto(intervalli, Math.max(inizio30, dati.start), now) - totale,
+      ))
+      : null;
 
-    return { totale, media, mediaPrec, perSettimana, giorniZero, resists: dati.resists.filter((t) => t >= inizio30).length, risparmiate };
-  }, [dati, now]);
+    return {
+      totale, perSettimana, giorniZero, risparmiate,
+      resists: dati.resists.filter((t) => t >= inizio30).length,
+    };
+  }, [dati, now, ritmo, intervalli]);
 
   const registro = useMemo(() => {
     if (!dati) return [];
@@ -1104,31 +1296,56 @@ export default function App() {
     [membriPerGruppo, gruppoAttivo],
   );
 
-  /* Chi non registra da 24 ore esce dalla classifica: senza dati il confronto
-     non vuol dire niente, e "sparire" non deve essere una strategia vincente.
-     Basta una sigaretta o un check-in "oggi zero" per rientrare. */
-  const SOGLIA_INATTIVO = DAY;
+  /* Chi non DICHIARA la giornata esce dalla classifica: senza dati il
+     confronto non vuol dire niente, e "sparire" non deve essere una
+     strategia vincente. Un giorno è dichiarato o perché ci sono sigarette
+     registrate, o perché è stato confermato "oggi zero" col check-in.
+
+     La regola di prima guardava `lastAttivita`, che si accende anche con
+     una voglia superata: bastava toccare un bottone per restare primi in
+     classifica con zero sigarette e senza mai dire com'era andata la
+     giornata. Chi non registrava niente risultava davanti a chi registrava
+     quattro sigarette, cioè l'unica strategia vincente era smettere di
+     segnare — e l'app perde esattamente il dato su cui si regge. */
+  /* Un giorno è dichiarato se ci sono sigarette registrate, se è stato
+     confermato «oggi zero», OPPURE se cade dopo una dichiarazione di aver
+     smesso: è la stessa regola che dà significato al silenzio nei conti.
+     Chi ha smesso davvero non deve tornare ogni giorno a giustificarsi. */
+  const dichiarato = (m, chiave) => (m.days?.[chiave] || 0) > 0
+    || !!m.checkins?.[chiave]
+    || (!!m.smessoDal && chiave >= ymd(m.smessoDal));
 
   const ioAttivo = useMemo(() => {
-    const ultimo = maxTs([...(dati?.cigs || []), ...(dati?.resists || []), ...(dati?.checkins || [])]);
-    if (!ultimo) return false;
-    return now - ultimo < SOGLIA_INATTIVO;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!dati) return false;
+    if (Number.isFinite(dati.smessoDal) && dati.smessoDal <= now) return true;
+    const oggiTs = sod(now);
+    const ieriTs = addGiorni(oggiTs, -1);
+    const inGiornata = (da, a) => dati.cigs.some((t) => t >= da && t < a)
+      || (dati.checkins || []).some((t) => t >= da && t < a);
+    return inGiornata(oggiTs, addGiorni(oggiTs, 1)) || inGiornata(ieriTs, oggiTs);
   }, [dati, now]);
 
   const classifica = useMemo(() => {
     const oggiKey = ymd(now);
+    const ieriKey = ymd(addGiorni(now, -1));
     const giorniPeriodo = gruppoPeriodo === 'giorno' ? 1 : gruppoPeriodo === 'settimana' ? 7 : 30;
     // addGiorni e non `sod(now) − i*DAY`: nei due giorni del cambio d'ora
     // quel calcolo cade alle 23:00 o all'01:00 del giorno prima, e ymd()
     // restituiva la data sbagliata. La classifica saltava o contava due
     // volte un giorno, due volte l'anno, senza nessun segnale evidente.
     const chiavi = Array.from({ length: giorniPeriodo }, (_, i) => ymd(addGiorni(now, -i)));
-    const ultimi7 = Array.from({ length: 7 }, (_, i) => ymd(addGiorni(now, -i)));
+    /* I sette giorni PIENI, oggi escluso, da tutte e due le parti del
+       confronto. Con la giornata in corso dentro solo gli "ultimi", il calo
+       usciva alto la mattina e calava da solo fino a sera: misurato su un
+       membro che non aveva cambiato niente, −14% a mezzanotte e 0% alle
+       23:00. È un criterio di ordinamento, quindi le persone venivano messe
+       in fila secondo un numero che si muoveva da sé. */
+    const ultimi7 = Array.from({ length: 7 }, (_, i) => ymd(addGiorni(now, -(i + 1))));
 
     return membriAttuali.map((m) => {
       const n = chiavi.reduce((tot, k) => tot + (m.days?.[k] || 0), 0);
       const resists = chiavi.reduce((tot, k) => tot + (m.resists?.[k] || 0), 0);
+      const dichiarati = chiavi.filter((k) => dichiarato(m, k)).length;
 
       /* Calo rispetto ai primi 7 giorni.
          `days` contiene una chiave SOLO per i giorni con almeno una
@@ -1140,15 +1357,19 @@ export default function App() {
          partire dal primo registrato. */
       const giorniOrdinati = Object.keys(m.days || {}).sort();
       let calo = null;
-      if (giorniOrdinati.length && dayDiff(daYmd(giorniOrdinati[0]), now) >= 13) {
+      if (giorniOrdinati.length && dayDiff(daYmd(giorniOrdinati[0]), now) >= 14) {
         const primoGiorno = daYmd(giorniOrdinati[0]);
         const primi = Array.from({ length: 7 }, (_, i) => ymd(addGiorni(primoGiorno, i)))
           .reduce((t, k) => t + (m.days[k] || 0), 0) / 7;
         const ultimi = ultimi7.reduce((t, k) => t + (m.days[k] || 0), 0) / 7;
         if (primi > 0) calo = Math.round(((primi - ultimi) / primi) * 100);
       }
-      const attivo = !!m.lastAttivita && now - m.lastAttivita < SOGLIA_INATTIVO;
-      return { ...m, n, resists, calo, attivo, oggi: m.days?.[oggiKey] || 0 };
+      // un giorno di tolleranza: chi non ha ancora aperto l'app oggi resta
+      // in classifica finché ieri è dichiarato
+      const attivo = dichiarato(m, oggiKey) || dichiarato(m, ieriKey);
+      return {
+        ...m, n, resists, calo, attivo, dichiarati, giorniPeriodo, oggi: m.days?.[oggiKey] || 0,
+      };
     }).sort((a, b) => {
       // gli inattivi in fondo, comunque vadano i loro numeri
       if (a.attivo !== b.attivo) return a.attivo ? -1 : 1;
@@ -1162,7 +1383,6 @@ export default function App() {
       if (a.n !== b.n) return a.n - b.n;
       return b.resists - a.resists;
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [membriAttuali, gruppoPeriodo, ordine, now]);
 
   const feed = useMemo(() => {
@@ -1228,6 +1448,8 @@ export default function App() {
                   tappaBanner={tappaBanner} onChiudiBanner={() => setTappaBanner(null)}
                   checkedIn={checkedInOggi} lotto={lotto}
                   onFuma={registraSigaretta} onUmore={() => setUmore(true)}
+                  rif={rif} prossimaTappa={prossimaTappa} copertoOra={copertoOra}
+                  inAstinenza={Number.isFinite(dati?.smessoDal)} onCheckin={handleCheckin}
                   onTante={() => setTante(true)} onAnnullaLotto={annullaLotto}
                   onVediRegistro={() => { setActiveTab('percorso'); setPercorsoSezione('registro'); setLotto(null); }}
                   onAnnulla={handleAnnulla} onTag={handleTag} onSkipTag={() => setUltimoTs(null)}
@@ -1242,6 +1464,9 @@ export default function App() {
                   giorniPercorso={giorniPercorso}
                   sezione={percorsoSezione} setSezione={setPercorsoSezione}
                   onElimina={handleElimina} onTante={() => setTante(true)}
+                  mancante={contiMancanti} onVaiAlProfilo={() => setActiveTab('profilo')}
+                  rif={rif} giorniSenza={giorniSenza} copertoOra={copertoOra}
+                  inAstinenza={Number.isFinite(dati?.smessoDal)}
                 />
               )}
 
@@ -1253,6 +1478,8 @@ export default function App() {
                   onApriGruppo={() => setDentroGruppo(true)}
                   onSalvaPiano={handleSalvaPiano}
                   onModificaMotivo={() => salva({ ...dati, onboarded: false })}
+                  smessoDal={dati?.smessoDal ?? null} giorniSenza={giorniSenza}
+                  onDichiaraSmesso={dichiaraSmesso} onAnnullaSmesso={annullaSmesso}
                 />
               )}
 
@@ -1289,6 +1516,8 @@ export default function App() {
                   start={dati?.start} conti={conti} giorniPercorso={giorniPercorso}
                   motivo={dati?.profile?.motivo} obiettivo={s?.obiettivo ?? null}
                   onModificaMotivo={() => salva({ ...dati, onboarded: false })}
+                  smessoDal={dati?.smessoDal ?? null} giorniSenza={giorniSenza}
+                  onDichiaraSmesso={dichiaraSmesso} onAnnullaSmesso={annullaSmesso}
                 />
               )}
             </div>
@@ -1316,12 +1545,7 @@ export default function App() {
             gruppi={gruppi}
             onRespira={() => setRespiro(true)}
             onApriGruppo={() => { setCraving(false); setActiveTab('aiuto'); setDentroGruppo(true); }}
-            onCeLHoFatta={() => {
-              registraResistenza(); setCraving(false);
-              showToast(unitario > 0
-                ? `Voglia superata · +${minutiPer} min · +${eur(unitario)}`
-                : `Voglia superata · +${minutiPer} minuti`);
-            }}
+            onCeLHoFatta={() => { registraResistenza(); setCraving(false); showToast(toastVoglia()); }}
             onHoFumato={() => { registraSigaretta(); setCraving(false); }}
             onChiudi={() => setCraving(false)}
           />
@@ -1333,9 +1557,7 @@ export default function App() {
               setRespiro(false);
               if (craving) {
                 registraResistenza(); setCraving(false);
-                showToast(unitario > 0
-                  ? `Voglia superata · +${minutiPer} min · +${eur(unitario)}`
-                  : `Voglia superata · +${minutiPer} minuti`);
+                showToast(toastVoglia());
               }
             }}
             onHoFumato={() => { registraSigaretta(); setRespiro(false); setCraving(false); }}

@@ -20,6 +20,22 @@ export const addGiorni = (ts, n) => {
   return d.getTime();
 };
 
+/* Quanto dura DAVVERO il giorno di quel timestamp: 24 ore quasi sempre,
+   23 o 25 nei due giorni del cambio d'ora. */
+const durataGiorno = (ts) => { const i = sod(ts); return addGiorni(i, 1) - i; };
+
+/* Giorni FRAZIONARI fra due istanti, ora legale compresa.
+   `(b − a) / 86400000` sbaglia di un'ora tutte le volte che nell'intervallo
+   c'è un cambio d'ora, e quell'ora resta dentro per sempre: a 20 sigarette
+   al giorno vale 0,83 sigarette, cioè un quarto di euro che compare o
+   sparisce dai contatori senza motivo. Qui i giorni interi li conta
+   dayDiff (che ragiona per calendario) e le due code si misurano come
+   frazione del giorno a cui appartengono. */
+export const giorniFra = (a, b) => {
+  const frazione = (ts) => (ts - sod(ts)) / durataGiorno(ts);
+  return dayDiff(a, b) + frazione(b) - frazione(a);
+};
+
 /* Math.max(...array) passa ogni elemento come argomento: su uno storico
    lungo (anni di sigarette) si arriva al limite di argomenti del motore JS
    e parte un RangeError. Qui si scorre e basta. Su array vuoto torna null
@@ -40,6 +56,17 @@ export const daYmd = (chiave) => {
 export const ora = (ts) => new Date(ts).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
 export const dec = (n) => n.toFixed(1).replace('.', ',');
 export const eur = (n) => `${n.toFixed(2).replace('.', ',')} €`;
+
+/* Il PREZZO DI UNA SIGARETTA va scritto per intero, non arrotondato al
+   centesimo. Un pacchetto da 6,50 € costa 0,325 € a sigaretta: mostrando
+   «0,33 €» la card dichiarava una catena che non tornava — su 367
+   sigarette il lettore con la calcolatrice trovava 1,83 € in più di
+   quanto la card stessa dichiarava come totale. Tre decimali coprono
+   tutti i formati di pacchetto reali (10, 20, 25, 30 sigarette). */
+export const eurUnitario = (n) => {
+  const s = n.toFixed(3).replace(/0$/, '').replace(/\.$/, '');
+  return `${s.replace('.', ',')} €`;
+};
 /* col segno esplicito: il meno tipografico, non il trattino */
 export const eurSegno = (n) => `${n < -0.004 ? '−' : ''}${Math.abs(n).toFixed(2).replace('.', ',')} €`;
 /* stesso meno tipografico di eurSegno: il trattino ASCII di toLocaleString
@@ -53,7 +80,29 @@ export const ymd = (ts) => {
 export const initials = (n = '') =>
   n.trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '?';
 
-/* minuti → "3g 4h", "5h 20m", "42m"; se negativo antepone il meno */
+/* Mesi e anni delle durate lunghe. Un mese vale 30,44 giorni, non 30
+   tondi: con i mesi da 30 giorni un anno intero usciva «12 mesi 5g», che
+   è il traguardo più grande dell'app scritto nel modo meno
+   riconoscibile possibile. Sotto il mese si continua a contare a giorni,
+   perché «1 mese» per trenta giorni sarebbe una promessa in anticipo. */
+const GIORNI_MESE = 30.4375;
+const GIORNI_ANNO = 365;
+const plurale = (n, uno, molti) => `${n} ${n === 1 ? uno : molti}`;
+
+/* La parte lunga, comune a tempoVita e durata: da un mese in su. */
+const lunga = (g) => {
+  if (g < GIORNI_ANNO) {
+    const mesi = Math.floor(g / GIORNI_MESE);
+    const resto = Math.floor(g - mesi * GIORNI_MESE);
+    return `${plurale(mesi, 'mese', 'mesi')}${resto ? ` ${resto}g` : ''}`;
+  }
+  const anni = Math.floor(g / GIORNI_ANNO);
+  const mesi = Math.floor((g - anni * GIORNI_ANNO) / GIORNI_MESE);
+  return `${plurale(anni, 'anno', 'anni')}${mesi ? ` ${plurale(mesi, 'mese', 'mesi')}` : ''}`;
+};
+
+/* minuti → "1 anno 2 mesi", "3 mesi 4g", "3g 4h", "5h 20m", "42m".
+   Se negativo antepone il meno tipografico. */
 export const tempoVita = (minuti) => {
   const segno = minuti < -0.5 ? '−' : '';
   const m = Math.floor(Math.abs(minuti));
@@ -61,20 +110,22 @@ export const tempoVita = (minuti) => {
   const h = Math.floor(m / 60);
   if (h < 24) return `${segno}${h}h ${String(m % 60).padStart(2, '0')}m`;
   const g = Math.floor(h / 24);
-  if (g < 60) return `${segno}${g}g ${h % 24}h`;
-  const mesi = Math.floor(g / 30);
-  return `${segno}${mesi} mesi ${g % 30}g`;
+  if (g < 31) return `${segno}${g}g ${h % 24}h`;
+  return `${segno}${lunga(g)}`;
 };
 
+/* Durate "quanto è passato / quanto manca". Stessa scala di tempoVita:
+   prima questa si fermava ai mesi e un anno intero senza fumare veniva
+   annunciato come «12 mesi», mentre trenta giorni diventavano «1 mesi». */
 export const durata = (ms) => {
-  const m = Math.floor(ms / 60000);
+  const m = Math.floor(Math.max(0, ms) / 60000);
   if (m < 1) return 'adesso';
   if (m < 60) return `${m}m`;
   const h = Math.floor(m / 60);
   if (h < 24) return m % 60 ? `${h}h ${m % 60}m` : `${h}h`;
   const g = Math.floor(h / 24);
-  if (g < 30) return `${g}g ${h % 24}h`;
-  return `${Math.floor(g / 30)} mesi`;
+  if (g < 31) return `${g}g ${h % 24}h`;
+  return lunga(g);
 };
 
 export const mmss = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;

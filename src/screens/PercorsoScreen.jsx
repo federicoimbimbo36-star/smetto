@@ -1,5 +1,5 @@
 import { Flag, X, ListPlus } from 'lucide-react';
-import { eur, eurSegno, eur0, tempoVita, dec, durata, ora, etichettaGiorno } from '../utils/format';
+import { eur, eur0, eurUnitario, tempoVita, dec, durata, ora, etichettaGiorno } from '../utils/format';
 import { Timeline, Barre, CurvaRisparmio, Pianta } from '../components';
 
 /* ------------------------------------------------------------------ */
@@ -16,8 +16,15 @@ import { Timeline, Barre, CurvaRisparmio, Pianta } from '../components';
 
 export default function PercorsoScreen({
   s, mese, registro, tags, now, conti, tappe, piano, record,
-  giorniPercorso, sezione, setSezione, onElimina, onTante,
+  giorniPercorso, sezione, setSezione, onElimina, onTante, mancante, onVaiAlProfilo,
+  rif, giorniSenza, copertoOra, inAstinenza,
 }) {
+  /* Un trattino non è un fallimento: è quello che si scrive quando il
+     numero non esiste ancora. Le proiezioni a un anno valgono null
+     finché non c'è nemmeno un giorno pieno alle spalle, perché una
+     proiezione a dodici mesi costruita su mezza giornata è un'invenzione. */
+  const forse = (v, come) => (v == null ? '—' : come(v));
+
   return (
     <div className="screen">
       <h1 className="titolo-schermata">Il tuo percorso</h1>
@@ -67,15 +74,17 @@ export default function PercorsoScreen({
                 ))}
               </div>
               <p className="nota">
-                Ogni settimana togli il 15% alla media della precedente. Il piano si ricalcola
-                sui numeri veri, non su questa previsione.
+                Ogni settimana togli il 15% alla media della precedente, e comunque almeno una
+                sigaretta al giorno: sotto le sette al giorno è quest&apos;ultima regola a comandare,
+                quindi il calo diventa più ripido. Il piano si ricalcola sui numeri veri, non su
+                questa previsione.
               </p>
             </div>
           )}
 
           <h2 className="titolo-sezione stacco">Cosa sta recuperando il corpo</h2>
           <p className="testo-piccolo" style={{ marginTop: 8 }}>
-            Il conto riparte da ogni sigaretta. Sei a {s?.ultima ? durata(now - s.ultima) : '—'} dall'ultima.
+            Il conto riparte da ogni sigaretta. Sei a {rif ? durata(Math.max(0, now - rif)) : '—'} dall&apos;ultima.
           </p>
           <Timeline tappe={tappe} />
         </>
@@ -84,10 +93,45 @@ export default function PercorsoScreen({
       {/* ============================== NUMERI ============================== */}
       {sezione === 'numeri' && (
         <>
-          {!conti && (
+          {/* Due mancanze diverse, due risposte diverse: il prezzo si scrive
+              in dieci secondi, il ritmo di partenza o lo dichiari o va
+              misurato. Prima qui compariva sempre «manca il prezzo», anche
+              a chi il prezzo l'aveva messo. */}
+          {!conti && mancante === 'prezzo' && (
             <div className="vuoto">
               <div className="vuoto-titolo">Manca il prezzo del pacchetto</div>
               <p className="vuoto-testo">Scrivilo nel Profilo e da lì in poi ogni conto si popola da solo.</p>
+              <button className="btn btn-secondario btn-piccolo" onClick={onVaiAlProfilo}>Vai al Profilo</button>
+            </div>
+          )}
+
+          {!conti && mancante === 'ritmo' && (
+            <div className="vuoto">
+              <div className="vuoto-titolo">Manca il ritmo da cui parti</div>
+              <p className="vuoto-testo">
+                Senza sapere quante ne fumavi prima non posso dirti quante non ne hai fumate: sarebbe
+                un numero inventato. Scrivilo nel Profilo e i conti partono subito, oppure continua a
+                registrare e lo ricavo dalla tua prima settimana piena.
+              </p>
+              <button className="btn btn-secondario btn-piccolo" onClick={onVaiAlProfilo}>
+                Dimmi quante ne fumavi
+              </button>
+            </div>
+          )}
+
+          {/* Perché i conti possono fermarsi, detto dove si guardano i conti.
+              Durante la riduzione il tempo che nessuno ha certificato non
+              produce risparmio: dieci giorni di silenzio valevano 200
+              sigarette «evitate» e 60 € mai risparmiati. */}
+          {conti && !copertoOra && !inAstinenza && (
+            <div className="card">
+              <div className="etichetta">I conti sono in pausa</div>
+              <p className="testo-piccolo" style={{ marginTop: 8 }}>
+                L&apos;ultima cosa che mi hai detto risale a più di 48 ore fa. Da lì in avanti non
+                so cosa è successo, quindi non conto quel tempo come risparmio: sarebbe come dare
+                per scontato che non hai fumato. Registra una sigaretta, conferma che sei a zero,
+                oppure dimmi che hai smesso — e da quel momento riparte.
+              </p>
             </div>
           )}
 
@@ -95,31 +139,52 @@ export default function PercorsoScreen({
             <>
               <div className={`eroe-card ${conti.inRosso ? 'eroe-spento' : ''}`}>
                 <div className="etichetta">{conti.inRosso ? 'Sopra il ritmo di partenza' : 'Risparmiato finora'}</div>
-                <div className="eroe-val num">{eurSegno(conti.risparmiato)}</div>
+                {/* Mai «−12,40 € risparmiati»: lo scarto dal ritmo ha un
+                    segno, i soldi no. Sono due numeri diversi e tutti e due
+                    positivi, ed è l'etichetta a dire quale dei due stai
+                    guardando. */}
+                <div className="eroe-val num">{eur(conti.inRosso ? conti.spesoInPiu : conti.risparmiato)}</div>
+                {/* eurUnitario e non eur: un pacchetto da 6,50 € fa 0,325 € a
+                    sigaretta, e scrivendo «0,33 €» la card dichiarava una
+                    catena che non tornava — su 367 sigarette chi
+                    moltiplicava trovava 1,83 € in più del totale scritto
+                    due righe sopra. */}
                 <p className="eroe-sub">
-                  {conti.evitateMostrate < 0.1 ? (
+                  {conti.inPari ? (
                     <>sei in pari col ritmo da cui sei partito ({dec(conti.baseline)} al giorno)</>
                   ) : conti.inRosso ? (
-                    <>sei <b>{dec(conti.evitateMostrate)}</b> sigarette sopra il ritmo da cui sei
-                      partito ({dec(conti.baseline)} al giorno), a {eur(conti.unitario)} l&apos;una.
+                    <>sei <b>{dec(conti.scartoMostrato)}</b> sigarette sopra il ritmo da cui sei
+                      partito ({dec(conti.baseline)} al giorno), a {eurUnitario(conti.unitario)} l&apos;una.
                       Il numero torna verde appena scendi.</>
                   ) : (
-                    <>sono <b>{dec(conti.evitateMostrate)}</b> sigarette che non hai fumato rispetto
+                    <>sono <b>{dec(conti.scartoMostrato)}</b> sigarette che non hai fumato rispetto
                       al ritmo da cui sei partito ({dec(conti.baseline)} al giorno), a{' '}
-                      {eur(conti.unitario)} l&apos;una.</>
+                      {eurUnitario(conti.unitario)} l&apos;una.</>
+                  )}
+                  {conti.baselineDichiarata === false && (
+                    <> Il ritmo di partenza è la media della tua prima settimana piena.</>
                   )}
                 </p>
                 <CurvaRisparmio punti={conti.curva} />
                 <div className="eroe-riga">
-                  <div><span className={`num ${conti.oggiRisparmio < 0 ? 'spento' : ''}`}>{eurSegno(conti.oggiRisparmio)}</span><small>oggi</small></div>
-                  <div><span className={`num ${conti.settimana < 0 ? 'spento' : ''}`}>{eurSegno(conti.settimana)}</span><small>questa settimana</small></div>
-                  <div><span className={`num ${conti.annoProiezione < 0 ? 'spento' : ''}`}>{eur0(conti.annoProiezione)}</span><small>in un anno così</small></div>
+                  <div>
+                    <span className={`num ${conti.spesoOggi > 0 ? 'spento' : ''}`}>{eur(conti.spesoOggi > 0 ? conti.spesoOggi : conti.risparmioOggi)}</span>
+                    <small>{conti.spesoOggi > 0 ? 'oggi, in più' : 'oggi'}</small>
+                  </div>
+                  <div>
+                    <span className={`num ${conti.spesoSett > 0 ? 'spento' : ''}`}>{eur(conti.spesoSett > 0 ? conti.spesoSett : conti.risparmioSett)}</span>
+                    <small>{conti.spesoSett > 0 ? 'in settimana, in più' : 'questa settimana'}</small>
+                  </div>
+                  <div>
+                    <span className={`num ${conti.spesoAnno > 0 ? 'spento' : ''}`}>{forse(conti.spesoAnno > 0 ? conti.spesoAnno : conti.risparmioAnno, eur0)}</span>
+                    <small>in un anno così</small>
+                  </div>
                 </div>
               </div>
 
               <div className="card stacco">
                 <div className="etichetta">{conti.inRosso ? 'Vita bruciata in più' : 'Vita non bruciata'}</div>
-                <div className={`eroe-val num ${conti.inRosso ? 'spento' : ''}`}>{tempoVita(conti.minutiSalvati)}</div>
+                <div className={`eroe-val num ${conti.inRosso ? 'spento' : ''}`}>{tempoVita(conti.inRosso ? conti.vitaPersaInPiu : conti.vitaTenuta)}</div>
                 <p className="eroe-sub">
                   Le stesse sigarette della card qui sopra, contate in tempo invece che in
                   euro: {conti.minutiPer} minuti l&apos;una. {conti.inRosso
@@ -130,9 +195,18 @@ export default function PercorsoScreen({
                     numero: le due card devono potersi leggere una accanto
                     all'altra senza che i conti si contraddicano. */}
                 <div className="eroe-riga">
-                  <div><span className={`num ${conti.oggiVita < 0 ? 'spento' : ''}`}>{tempoVita(conti.oggiVita)}</span><small>oggi</small></div>
-                  <div><span className={`num ${conti.settimanaVita < 0 ? 'spento' : ''}`}>{tempoVita(conti.settimanaVita)}</span><small>questa settimana</small></div>
-                  <div><span className={`num ${conti.annoVita < 0 ? 'spento' : ''}`}>{tempoVita(conti.annoVita)}</span><small>in un anno così</small></div>
+                  <div>
+                    <span className={`num ${conti.vitaPersaOggi > 0 ? 'spento' : ''}`}>{tempoVita(conti.vitaPersaOggi > 0 ? conti.vitaPersaOggi : conti.vitaOggi)}</span>
+                    <small>{conti.vitaPersaOggi > 0 ? 'oggi, in più' : 'oggi'}</small>
+                  </div>
+                  <div>
+                    <span className={`num ${conti.vitaPersaSett > 0 ? 'spento' : ''}`}>{tempoVita(conti.vitaPersaSett > 0 ? conti.vitaPersaSett : conti.vitaSett)}</span>
+                    <small>{conti.vitaPersaSett > 0 ? 'in settimana, in più' : 'questa settimana'}</small>
+                  </div>
+                  <div>
+                    <span className={`num ${conti.vitaPersaAnno > 0 ? 'spento' : ''}`}>{forse(conti.vitaPersaAnno > 0 ? conti.vitaPersaAnno : conti.vitaAnno, tempoVita)}</span>
+                    <small>in un anno così</small>
+                  </div>
                 </div>
                 {/* Il costo pieno del fumo è un'altra cosa dal risparmio, e
                     infatti sta fuori dalla riga: metterlo lì dentro era il
@@ -141,7 +215,7 @@ export default function PercorsoScreen({
                 <p className="eroe-sub" style={{ marginTop: 16 }}>
                   Quello che il fumo ti costa comunque: <b>{tempoVita(conti.minutiPersiTotali)}</b> da
                   quando hai cominciato, <b>{tempoVita(conti.minutiPersiOggi)}</b> oggi, e{' '}
-                  <b>{tempoVita(conti.minutiAnnoRitmo)}</b> all&apos;anno se resti al passo di adesso.
+                  <b>{forse(conti.minutiAnnoRitmo, tempoVita)}</b> all&apos;anno se resti al passo di adesso.
                 </p>
                 <p className="fonte">
                   Stima da Jackson, Jarvis e West, <i>The price of a cigarette: 20 minutes of life?</i>,
@@ -158,17 +232,27 @@ export default function PercorsoScreen({
             <>
               <div className="stat-griglia">
                 <div className="stat">
-                  <span className="stat-val num">{dec(s.media7)}</span>
-                  <span className="stat-lab">media degli ultimi 7 giorni</span>
+                  <span className="stat-val num">{s.media7 == null ? '—' : dec(s.media7)}</span>
+                  <span className="stat-lab">media dei 7 giorni pieni</span>
                 </div>
                 <div className="stat">
                   <span className="stat-val stat-val-verde num">{s.resistSett}</span>
                   <span className="stat-lab">voglie superate in settimana</span>
                 </div>
-                {mese && (
+                {/* Due statistiche diverse per due fasi diverse, mai
+                    insieme: in astinenza dichiarata il tempo si conta da
+                    solo e non ha il tetto dei trenta giorni; in riduzione si
+                    contano solo i giorni completi e certificati, altrimenti
+                    sparire sarebbe il modo più veloce per collezionarli. */}
+                {inAstinenza ? (
+                  <div className="stat">
+                    <span className="stat-val stat-val-verde num">{giorniSenza ?? '—'}</span>
+                    <span className="stat-lab">giorni senza fumare</span>
+                  </div>
+                ) : mese && (
                   <div className="stat">
                     <span className="stat-val stat-val-verde num">{mese.giorniZero}</span>
-                    <span className="stat-lab">giorni a zero nell'ultimo mese</span>
+                    <span className="stat-lab">giorni a zero, confermati</span>
                   </div>
                 )}
                 <div className="stat">
@@ -205,6 +289,10 @@ export default function PercorsoScreen({
               {mese && (
                 <>
                   <h2 className="titolo-sezione stacco">Media per settimana</h2>
+                  <p className="testo-piccolo" style={{ marginTop: 8 }}>
+                    Settimane di giorni pieni: oggi non c&apos;è ancora, perché mezza giornata
+                    divisa per sette farebbe sembrare un calo quello che è solo l&apos;ora.
+                  </p>
                   <Barre dati={mese.perSettimana} budget={null} evidenzia={mese.perSettimana.length - 1} />
                   {mese.risparmiate > 0 && (
                     <p className="testo-piccolo" style={{ marginTop: 16 }}>
@@ -218,8 +306,9 @@ export default function PercorsoScreen({
               {s.topTrigger && (
                 <div className="card card-tenue stacco">
                   <p className="testo-piccolo">
-                    <b>{s.topTrigger[0]}</b> ha innescato {s.topTrigger[1]} sigarette su {s.settTot} questa
-                    settimana. Scrivi il tuo se–allora per quella situazione: lo trovi in Aiuto.
+                    <b>{s.topTrigger[0]}</b> ha innescato {s.topTrigger[1]} sigarette su {s.taggateSett} a
+                    cui hai dato un nome questa settimana. Scrivi il tuo se–allora per quella
+                    situazione: lo trovi in Aiuto.
                   </p>
                 </div>
               )}

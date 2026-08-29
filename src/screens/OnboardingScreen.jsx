@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { MOTIVI, MINUTI_PER_SIGARETTA } from '../constants';
-import { eur, eur0, tempoVita } from '../utils/format';
+import { eur0, eurUnitario, tempoVita, dec } from '../utils/format';
 import { BrandMark, Pianta } from '../components';
 
 /* ------------------------------------------------------------------ */
@@ -192,9 +192,12 @@ export default function OnboardingScreen({ iniziale, onFine, onChiediPermesso })
             </div>
             {unitario > 0 && (
               <div className="onb-eco">
-                Una sigaretta ti costa <b>{eur(unitario)}</b>.
+                Una sigaretta ti costa <b>{eurUnitario(unitario)}</b>.
                 {nBase > 0 && (
-                  <> A quindici al giorno di ritmo attuale sono <b>{eur0(nBase * unitario * 365)}</b> all'anno,
+                  /* «A quindici al giorno» era scritto a mano: chi aveva
+                     dichiarato trenta leggeva "quindici" accanto a un
+                     numero calcolato su trenta. */
+                  <> A <b>{dec(nBase)}</b> al giorno di ritmo attuale sono <b>{eur0(nBase * unitario * 365)}</b> all&apos;anno,
                     e ogni giorno se ne vanno <b>{tempoVita(nBase * MINUTI_PER_SIGARETTA[sesso])}</b> di vita attesa.</>
                 )}
               </div>
@@ -246,9 +249,18 @@ export default function OnboardingScreen({ iniziale, onFine, onChiediPermesso })
           </button>
         )}
 
-        {(passo === 1 || passo === 2) && (
+        {passo === 1 && (
           <button className="btn btn-testo btn-testo-tenue btn-testo-centro" onClick={avanti}>
             Lo faccio dopo
+          </button>
+        )}
+        {/* Il ritmo di partenza si può ancora saltare, ma dicendo cosa
+            costa: senza, i contatori non partono per una settimana. Prima
+            il bottone diceva solo «Lo faccio dopo» e l'app riempiva il
+            buco con una stima che si misurava da sola. */}
+        {passo === 2 && (
+          <button className="btn btn-testo btn-testo-tenue btn-testo-centro" onClick={avanti}>
+            {nBase > 0 ? 'Lo faccio dopo' : 'Non lo so — ricavalo dalla prima settimana'}
           </button>
         )}
       </div>

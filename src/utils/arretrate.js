@@ -46,35 +46,60 @@ export function finestre(adesso = Date.now()) {
 
 export const finestraDi = (id, adesso) => finestre(adesso).find((f) => f.id === id) || null;
 
+/* Il primo istante libero a partire da `ts`, cercando alternativamente
+   prima e dopo, e stringendo la grana quando la finestra è piena: prima i
+   minuti, poi i secondi, poi i millisecondi. L'ultimo livello non fallisce
+   mai — una finestra dura almeno un minuto, cioè 60.000 posti, e le
+   sigarette sono al massimo cinquanta. */
+function primoLibero(ts, presi, da, a) {
+  for (const grana of [60000, 1000, 1]) {
+    for (let k = 1; k <= 60000; k += 1) {
+      const giu = ts - k * grana;
+      const su = ts + k * grana;
+      if (giu >= da && !presi.has(giu)) return giu;
+      if (su <= a && !presi.has(su)) return su;
+      if (giu < da && su > a) break;      // finestra esaurita a questa grana
+    }
+  }
+  return ts;
+}
+
 /* Distribuisce `quante` sigarette dentro la finestra, a intervalli
    regolari e scostate dai bordi di mezzo passo — così due sigarette in
    cinque ore non finiscono una all'inizio esatto e una alla fine esatta.
    I minuti si arrotondano perché nel registro si legge l'ora, e i secondi
    lì dentro sarebbero solo rumore.
 
-   `esistenti` serve a non generare un timestamp già in uso: le etichette
-   del registro (`dati.tags`) sono indicizzate per timestamp, quindi un
-   doppione farebbe condividere l'etichetta a due sigarette diverse. */
+   DUE TIMESTAMP NON POSSONO MAI COINCIDERE, e prima potevano.
+   `dati.tags` è indicizzato per timestamp, quindi un doppione fa
+   condividere l'etichetta a due sigarette diverse — ma soprattutto
+   `handleElimina` toglie dal registro per valore: con due sigarette allo
+   stesso istante, un tocco sulla X ne cancellava due, e da lì in poi ogni
+   conteggio era sbagliato senza modo di accorgersene.
+
+   Il vecchio ciclo di riparazione poteva arrendersi e inserire comunque il
+   doppione. Succedeva nelle finestre strette, che sono raggiungibili: alle
+   07:03 «Stamattina» dura tre minuti, e venti sigarette dentro tre minuti
+   producevano quattro istanti distinti su venti. Adesso la grana si adatta
+   alla larghezza della finestra e `primoLibero` non si arrende. */
 export function distribuisci(quante, finestra, esistenti = []) {
   const n = Math.max(1, Math.min(50, Math.round(quante)));
   const { da, a } = finestra;
   const passo = (a - da) / n;
+  /* Al minuto tondo finché c'è spazio; sotto il minuto di distanza media
+     si scende ai secondi, perché arrotondare al minuto significherebbe
+     chiedere lo stesso istante più volte. */
+  const grana = passo >= 60000 ? 60000 : 1000;
   const presi = new Set(esistenti);
   const fuori = [];
 
   for (let i = 0; i < n; i += 1) {
     const grezzo = da + passo * (i + 0.5);
-    let ts = Math.round(grezzo / 60000) * 60000;      // al minuto tondo
-    // se quel minuto è già occupato si scorre avanti, e se anche avanti è
-    // pieno si torna indietro: l'importante è restare dentro la giornata
-    let scarto = 0;
-    while (presi.has(ts) && scarto < 240) {
-      scarto += 1;
-      const avanti = ts + scarto * 60000;
-      const indietro = ts - scarto * 60000;
-      if (!presi.has(avanti) && avanti <= a) { ts = avanti; break; }
-      if (!presi.has(indietro) && indietro >= da) { ts = indietro; break; }
-    }
+    // il clamp evita anche il secondo effetto dell'arrotondamento: un
+    // timestamp mezzo minuto NEL FUTURO, che rendeva negativo il numero
+    // grande della Home («−1 min senza fumare»)
+    let ts = Math.min(a, Math.max(da, Math.round(grezzo / grana) * grana));
+    if (presi.has(ts)) ts = primoLibero(ts, presi, da, a);
     presi.add(ts);
     fuori.push(ts);
   }

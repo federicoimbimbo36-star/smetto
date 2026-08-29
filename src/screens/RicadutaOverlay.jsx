@@ -32,7 +32,7 @@ export default function RicadutaOverlay({ pausa, frase, ripartenze, giorniPercor
         <h1 className="ricaduta-titolo">Va bene.<br />Ripartiamo da qui.</h1>
         <p className="ricaduta-sub">
           {giorni >= 1
-            ? `Quei ${giorni === 1 ? 'giorno' : `${giorni} giorni`} non sono andati persi.`
+            ? (giorni === 1 ? 'Quel giorno non è andato perso.' : `Quei ${giorni} giorni non sono andati persi.`)
             : 'Il tempo che hai tenuto non è andato perso.'}
         </p>
 
