@@ -63,6 +63,12 @@ export function conScadenza(promessa, ms, timer = setTimeout) {
 /*     cancella(uid, key)              → { } | { error }               */
 /*     elenca(uid, prefix)             → { data: [{ key }] }           */
 /* ------------------------------------------------------------------ */
+/*  `uidDaChiave(key)` → l'utente a cui una chiave appartiene, o null.
+    Serve in due casi soli, e in nessuno dei due c'è una sessione da cui
+    leggerlo: le voci di coda scritte dalla versione precedente (che
+    l'utente non lo salvavano) e le scritture fatte mentre la sessione è
+    scaduta. Arriva da fuori perché questo file non deve sapere come sono
+    fatte le chiavi dell'app: lo sa installStorage.js, che le compone. */
 export function creaKvSincronizzato({
   locale,
   remoto,
@@ -70,6 +76,7 @@ export function creaKvSincronizzato({
   attesa = 3500,
   tentativi = 5,
   timer = setTimeout,
+  uidDaChiave = () => null,
 }) {
   /* Da quale revisione remota parte la prossima scrittura di questa
      chiave. Sta in memoria perché è solo un'ottimizzazione: se è
@@ -81,7 +88,21 @@ export function creaKvSincronizzato({
      bastava un refresh, o il sistema che chiude l'app in background,
      perché una scrittura fatta offline non partisse mai. E siccome la
      lettura preferiva il remoto, al rientro online il registro tornava
-     indietro — cioè la sigaretta registrata in ascensore spariva. */
+     indietro — cioè la sigaretta registrata in ascensore spariva.
+
+     E ADESSO SA ANCHE DI CHI È. Prima teneva chiave → valore e basta, e
+     al momento di consegnare usava l'utente di ADESSO. Su un telefono
+     condiviso questo bastava:
+
+       A registra offline  → la scrittura va in coda
+       A esce, entra B     → onAuthStateChange svuota la coda
+       → il registro di A finiva scritto sotto l'account di B.
+
+     Verificato, non temuto. E la RLS non poteva farci niente: la policy
+     controlla `user_id`, non la chiave, e B stava scrivendo righe sue.
+     La difesa deve stare qui. Ogni voce è { uid, value }: allo
+     svuotamento si consegna solo quello che appartiene a chi è entrato,
+     e il resto NON si tocca — resta lì, in attesa del suo proprietario. */
   const inCoda = new Map();
   let codaCaricata = false;
   let svuotamentoInCorso = false;
@@ -97,17 +118,35 @@ export function creaKvSincronizzato({
     catch { /* la copia in memoria resta valida */ }
   }
 
+  /* LA MIGRAZIONE DELLA CODA, che non può perdere niente.
+     Sul disco di chi aggiorna c'è ancora il formato vecchio, `[chiave,
+     valore]`, dove il valore è la stringa del registro oppure `null` per
+     una cancellazione. Quelle voci un proprietario non ce l'hanno
+     scritto, ma ce l'hanno implicito: le chiavi dell'app contengono
+     l'identificativo dell'utente, e `uidDaChiave` sa tirarlo fuori. È
+     l'unico momento in cui la chiave viene usata come prova di
+     proprietà, e solo perché è l'unica prova rimasta. Una voce che non
+     si riesce ad attribuire non viene buttata: resta in coda, in attesa,
+     e intanto il suo valore è comunque sulla copia locale. */
+  const normalizzaVoce = (key, v) => (
+    v && typeof v === 'object' && Object.hasOwn(v, 'value')
+      ? { uid: v.uid ?? uidDaChiave(key) ?? null, value: v.value }
+      : { uid: uidDaChiave(key) ?? null, value: v }
+  );
+
   async function caricaCoda() {
     if (codaCaricata) return;
     codaCaricata = true;
     try {
       const voci = analizza((await locale.get(CHIAVE_CODA))?.value);
-      if (Array.isArray(voci)) voci.forEach(([k, v]) => { if (!inCoda.has(k)) inCoda.set(k, v); });
+      if (Array.isArray(voci)) {
+        voci.forEach(([k, v]) => { if (!inCoda.has(k)) inCoda.set(k, normalizzaVoce(k, v)); });
+      }
     } catch { /* coda mai scritta */ }
   }
 
-  function accoda(key, value) {
-    inCoda.set(key, value);
+  function accoda(key, value, uid) {
+    inCoda.set(key, { uid: uid ?? uidDaChiave(key) ?? null, value });
     salvaCoda();
     if (!timerCoda) {
       timerCoda = timer(() => { timerCoda = null; svuota(); }, 5000);
@@ -117,13 +156,66 @@ export function creaKvSincronizzato({
   /* ---------------------------------------------------------------- */
   /*  SCRITTURA CON CONTROLLO DI CONCORRENZA                          */
   /* ---------------------------------------------------------------- */
-  async function scriviRemoto(uid, key, valoreTesto) {
-    if (valoreTesto === null) {
-      const esito = await attendi(promessaVera(remoto.cancella(uid, key)));
-      if (esito === SCADUTA || esito?.error) return { ok: false };
+  /* ---------------------------------------------------------------- */
+  /*  LA CANCELLAZIONE, CHE NON PUÒ ESSERE CIECA                       */
+  /* ---------------------------------------------------------------- */
+  /* `aggiorna` dichiara da quale revisione parte; `cancella` no, e
+     faceva un DELETE secco sulla riga. Cioè: la scrittura era protetta e
+     la cancellazione, che distrugge di più, non lo era.
+
+       A legge la revisione 10
+       B modifica il registro          → revisione 11
+       A cancella, convinta di essere alla 10
+       → spariva anche il lavoro di B, che A non aveva mai visto.
+
+     Adesso la cancellazione dichiara la revisione come tutto il resto. Se
+     nel frattempo qualcuno ha scritto, la riga non viene toccata e la
+     cancellazione viene ABBANDONATA — non ritentata contro la revisione
+     nuova, perché quella conterrebbe dati che chi ha chiesto di cancellare
+     non ha mai visto, e ritentare sarebbe di nuovo un delete cieco, solo
+     più lento.
+
+     È volutamente diverso dal ramo della scrittura: là si può fondere,
+     perché due modifiche si sommano; qui no, perché «cancella tutto» e
+     «aggiungi una sigaretta» non si sommano, si contraddicono. Fra le due
+     vince quella che non perde dati.
+
+     L'operazione risulta comunque conclusa (`ok`), altrimenti la coda la
+     ritenterebbe ogni venti secondi per sempre. Il dispositivo viene
+     avvisato, e alla prima lettura si riallinea con quello che c'è. */
+  async function cancellaRemoto(uid, key) {
+    /* Senza revisione nota non si cancella alla cieca: prima si guarda a
+       che punto è la riga. */
+    if (!revNota.has(key)) {
+      const letto = await attendi(promessaVera(remoto.leggi(uid, key)));
+      if (letto === SCADUTA || letto?.error) return { ok: false };
+      if (!letto.data) { revNota.delete(key); return { ok: true }; }  // già non c'è
+      revNota.set(key, letto.data.rev ?? 0);
+    }
+
+    const rev = revNota.get(key);
+    const esito = await attendi(promessaVera(remoto.cancella(uid, key, rev)));
+    if (esito === SCADUTA || esito?.error) return { ok: false };
+
+    /* `data` assente vuol dire che il database non sa dire quante righe ha
+       toccato: si accetta, perché è il comportamento di un adattatore che
+       non supporta la condizione, e non c'è modo di fare di meglio. */
+    if (!Array.isArray(esito.data) || esito.data.length >= 1) {
       revNota.delete(key);
       return { ok: true };
     }
+
+    // zero righe: o non c'era già più, o qualcuno ha scritto nel frattempo
+    const letto = await attendi(promessaVera(remoto.leggi(uid, key)));
+    if (letto === SCADUTA || letto?.error) return { ok: false };
+    if (!letto.data) { revNota.delete(key); return { ok: true }; }
+
+    revNota.set(key, letto.data.rev ?? 0);
+    return { ok: true, annullata: true };
+  }
+
+  async function scriviRemoto(uid, key, valoreTesto) {
+    if (valoreTesto === null) return cancellaRemoto(uid, key);
 
     let testo = valoreTesto;
 
@@ -175,21 +267,34 @@ export function creaKvSincronizzato({
     const uid = await remoto.utente();
     if (!uid) return;
     svuotamentoInCorso = true;
+    let miePendenti = false;
     try {
-      for (const [key, value] of [...inCoda.entries()]) {
-        const esito = await scriviRemoto(uid, key, value);
-        /* `inCoda.get(key) === value` e non `delete` e basta: durante lo
-           svuotamento l'utente può aver registrato un'altra sigaretta, e
-           quella scrittura ha rimpiazzato la voce in coda. Cancellandola
-           alla cieca si buttava via la versione PIÙ NUOVA — il modo più
-           stupido di perdere un dato, e succedeva. */
-        if (esito.ok && inCoda.get(key) === value) inCoda.delete(key);
+      for (const [key, voce] of [...inCoda.entries()]) {
+        /* NON È ROBA DI CHI È ENTRATO ADESSO: si salta, e soprattutto
+           non si consuma. La voce resta in coda finché non torna il suo
+           proprietario, che è l'unico a cui possa essere consegnata. */
+        if (voce.uid !== uid) continue;
+        const esito = await scriviRemoto(uid, key, voce.value);
+        /* Si confronta il VALORE e non la voce: durante lo svuotamento
+           l'utente può aver registrato un'altra sigaretta, e quella
+           scrittura ha rimpiazzato la voce in coda con un oggetto nuovo.
+           Cancellandola alla cieca si buttava via la versione PIÙ NUOVA —
+           il modo più stupido di perdere un dato, e succedeva. */
+        const attuale = inCoda.get(key);
+        if (esito.ok && attuale && attuale.value === voce.value) inCoda.delete(key);
+        else if (!esito.ok) miePendenti = true;
+        // se lo svuotamento ha fuso — o ha abbandonato una cancellazione —
+        // l'app in memoria è rimasta indietro
+        if (esito.ok && ((esito.value && esito.value !== voce.value) || esito.annullata)) avvisa(key);
       }
       await salvaCoda();
     } finally {
       svuotamentoInCorso = false;
     }
-    if (inCoda.size && !timerCoda) {
+    /* Si riprova solo se è rimasto in sospeso qualcosa DI QUESTO UTENTE:
+       ritentare ogni venti secondi per una voce che appartiene a un
+       account che non è entrato sarebbe un timer che non finisce mai. */
+    if (miePendenti && !timerCoda) {
       timerCoda = timer(() => { timerCoda = null; svuota(); }, 20000);
     }
   }
@@ -242,7 +347,7 @@ export function creaKvSincronizzato({
       /* Se dalla fusione è uscito qualcosa che il database non ha,
          glielo si porta: altrimenti resterebbe su un dispositivo solo
          fino alla prossima modifica, che potrebbe non arrivare mai. */
-      if (JSON.stringify(esito.data.value) !== testo) accoda(key, testo);
+      if (JSON.stringify(esito.data.value) !== testo) accoda(key, testo, uid);
 
       return { key, value: testo };
     },
@@ -253,23 +358,61 @@ export function creaKvSincronizzato({
          dispositivo e la coda la porterà al database più tardi. */
       await locale.set(key, value);
       const uid = await remoto.utente();
-      if (!uid) return { key, value };
-
       await caricaCoda();
+
+      /* SESSIONE ASSENTE NON VUOL DIRE «CONSEGNATO».
+         Prima qui si usciva e basta: la scrittura restava sulla copia
+         locale e non entrava in coda, quindi `inSospeso()` diceva zero
+         mentre due sigarette non erano partite. Il recupero c'era, ma
+         passava solo dalla lettura successiva, cioè da un riavvio
+         dell'app con la rete. Adesso si accoda, attribuita al
+         proprietario della chiave: quando l'utente rientra, la coda
+         riconosce che è sua e gliela consegna. */
+      if (!uid) {
+        accoda(key, value, uidDaChiave(key));
+        return { key, value };
+      }
+
       const esito = await scriviRemoto(uid, key, value);
       const finale = esito.value || value;
-      if (!esito.ok) accoda(key, finale);
-      else if (inCoda.get(key) === value) { inCoda.delete(key); salvaCoda(); }
+      if (!esito.ok) accoda(key, finale, uid);
+      else if (inCoda.get(key)?.value === value) { inCoda.delete(key); salvaCoda(); }
+
+      /* SE LA SCRITTURA HA DOVUTO FONDERE, CHI HA CHIAMATO DEVE SAPERLO.
+
+         Senza questa riga il difetto è vero e grave, e l'ha trovato la
+         verifica sull'identità degli eventi: `scriviRemoto` trova sul
+         database la sigaretta dell'altro dispositivo, la fonde e scrive
+         il risultato — ma l'app in memoria continua ad avere lo stato di
+         prima, quello che quella sigaretta non l'ha mai vista. Il
+         salvataggio SUCCESSIVO parte da lì, la revisione è aggiornata
+         quindi la scrittura passa senza fondere niente, e la sigaretta
+         dell'altro sparisce dal database.
+
+         Non è un caso di laboratorio: succede ogni volta che uno registra
+         qualcosa offline e poi, rientrato, cancella o modifica qualcosa. */
+      if (finale !== value) avvisa(key);
       return { key, value: finale };
     },
 
     async delete(key) {
       await locale.delete(key);
       const uid = await remoto.utente();
-      if (!uid) return { key, deleted: true };
+      // stessa regola della scrittura: senza sessione si accoda, non si
+      // fa finta che sia stato fatto
+      if (!uid) {
+        await caricaCoda();
+        accoda(key, null, uidDaChiave(key));
+        return { key, deleted: true };
+      }
       const esito = await scriviRemoto(uid, key, null);
-      if (!esito.ok) accoda(key, null);
-      return { key, deleted: true };
+      if (!esito.ok) accoda(key, null, uid);
+      /* Cancellazione abbandonata: sul database c'è qualcosa di più
+         recente di quello che si voleva cancellare, e il dispositivo ha
+         appena buttato via la sua copia. Va avvisato, così alla prima
+         lettura si riprende quello che c'è invece di restare vuoto. */
+      if (esito.annullata) avvisa(key);
+      return { key, deleted: !esito.annullata, annullata: Boolean(esito.annullata) };
     },
 
     async list(prefix = '') {

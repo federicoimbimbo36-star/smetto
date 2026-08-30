@@ -54,14 +54,42 @@ const remoto = {
   inserisci: (uid, key, valore) => supabase
     .from('user_kv').insert({ user_id: uid, key, value: valore, rev: 1 })
     .select('rev'),
-  cancella: (uid, key) => supabase
-    .from('user_kv').delete().eq('user_id', uid).eq('key', key),
+  /* CONDIZIONATA ALLA REVISIONE, esattamente come `aggiorna`. Un DELETE
+     secco poteva cancellare uno stato più recente di quello che il
+     dispositivo aveva letto: la scrittura era protetta, la cancellazione
+     — che distrugge di più — no. `.select('rev')` serve a sapere se ha
+     davvero toccato una riga: senza, zero righe e una riga sono
+     indistinguibili. */
+  cancella: (uid, key, rev) => supabase
+    .from('user_kv').delete()
+    .eq('user_id', uid).eq('key', key).eq('rev', rev)
+    .select('rev'),
   elenca: (uid, prefix) => supabase
     .from('user_kv').select('key').eq('user_id', uid).like('key', `${prefix}%`),
 };
 
+/* A CHI APPARTIENE UNA CHIAVE.
+   Le due chiavi private dell'app sono `smetto:log:<uid>` e
+   `smetto:seen:<uid>` (vedi constants.js): l'utente ce l'hanno scritto
+   dentro. Il motore di sincronizzazione se lo fa dare da qui invece di
+   dedurlo, perché non deve sapere niente della forma delle chiavi — e
+   perché quando Capacitor o un domani un'altra chiave entreranno in
+   gioco, l'unico posto da aggiornare è questo.
+
+   Lo usa in due casi, e in nessuno dei due esiste una sessione da cui
+   leggere l'utente: le voci di coda lasciate dalla versione precedente,
+   che l'utente non lo salvavano, e le scritture fatte mentre la sessione
+   è scaduta. Nel funzionamento normale il proprietario è quello della
+   sessione, che è l'unica fonte autorevole. */
+const uidDaChiave = (key) => {
+  const m = /^smetto:(?:log|seen):(.+)$/.exec(String(key));
+  return m ? m[1] : null;
+};
+
 const cloudKV = supabaseConfigurato
-  ? creaKvSincronizzato({ locale: localKV, remoto, fondi: fondiValore })
+  ? creaKvSincronizzato({
+    locale: localKV, remoto, fondi: fondiValore, uidDaChiave,
+  })
   : null;
 
 /* ------------------------------------------------------------------ */

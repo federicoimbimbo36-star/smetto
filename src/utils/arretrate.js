@@ -120,3 +120,56 @@ export function tappeDaRiavviare(cigsEsistenti, nuovi) {
   if (nuovoMax === null) return null;
   return precedente === null || nuovoMax > precedente ? nuovoMax : null;
 }
+
+/* ------------------------------------------------------------------ */
+/*  ANNULLARE IL LOTTO                                                 */
+/*                                                                     */
+/*  Sta qui e non dentro App.jsx per la stessa ragione di              */
+/*  `tappeDaRiavviare` qui sopra: è una regola, e una regola va         */
+/*  verificata, non guardata.                                          */
+/*                                                                     */
+/*  ANNULLARE IL LOTTO TOGLIE IL LOTTO, NON RIAVVOLGE IL TEMPO.        */
+/*                                                                     */
+/*  Prima si ripristinava l'istantanea scattata prima dell'aggiunta e   */
+/*  le si applicavano le lapidi. Sembra equivalente e non lo è: fra     */
+/*  l'aggiunta e l'annullamento passano quaranta secondi, e in quei     */
+/*  quaranta secondi può succedere qualcosa. Si va su Aiuto, si apre    */
+/*  la voglia, si tocca «Ho fumato» — oppure arriva una fusione         */
+/*  dall'altro telefono. Quella sigaretta nell'istantanea non c'è,      */
+/*  quindi tornando indietro spariva: senza lapide, e non solo dal      */
+/*  dispositivo, perché il salvataggio successivo partiva con la        */
+/*  revisione buona e la cancellava anche dal database.                 */
+/*                                                                     */
+/*  Adesso si parte dallo stato CORRENTE e si seppelliscono solo gli    */
+/*  identificativi del lotto. Le lapidi restano indispensabili: quelle  */
+/*  sigarette possono essere già arrivate al database o all'altro       */
+/*  dispositivo, e senza lapide tornerebbero indietro alla prima        */
+/*  fusione.                                                            */
+/*                                                                     */
+/*  Dall'istantanea si recupera solo quello che gli eventi non sanno    */
+/*  ricostruire da soli — `start` e `tappeViste` — e nemmeno quelli     */
+/*  alla cieca.                                                         */
+/* ------------------------------------------------------------------ */
+export function togliLotto(dati, lotto, rimuovi) {
+  let next = dati;
+  (lotto?.ids || []).forEach((id) => { next = rimuovi(next, id); });
+
+  /* `start` non può finire dopo la prima sigaretta rimasta: è
+     l'invariante che `normalizzaRegistro` fa rispettare, e rimettendo
+     l'istantanea alla lettera si poteva violarla — con `start` a null e
+     degli eventi ancora dentro, la Home tornava alla schermata di chi
+     non ha mai registrato niente. */
+  const start = next.cigs?.length
+    ? Math.min(lotto?.prima?.start ?? next.cigs[0], next.cigs[0])
+    : (lotto?.prima?.start ?? null);
+
+  /* Le tappe del corpo si rimettono indietro SOLO se il riferimento è
+     ancora quello che aveva installato questo lotto. Se nel frattempo è
+     stata registrata una sigaretta il conto è già ripartito da quella, e
+     riavvolgerlo qui vorrebbe dire regalare ore pulite che non esistono. */
+  const tappeViste = (lotto?.riavvio != null && next.tappeViste?.ref === lotto.riavvio)
+    ? lotto.prima.tappeViste
+    : next.tappeViste;
+
+  return { ...next, start, tappeViste };
+}

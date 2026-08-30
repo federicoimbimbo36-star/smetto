@@ -9,10 +9,12 @@ import {
 } from './utils/format';
 import { readStore, writeStore, onCambioEsterno } from './utils/storage';
 import {
-  normalizzaRegistro, fondiRegistri, timbra, rimuoviIstante, seppellisciTutto,
+  normalizzaRegistro, fondiRegistri, timbra, seppellisciTutto,
+  aggiungiEvento, aggiungiEventi, rimuoviEvento,
 } from './utils/fusione';
 import auth from './auth';
-import { distribuisci, tappeDaRiavviare } from './utils/arretrate';
+import { eliminaAccount } from './utils/account';
+import { distribuisci, tappeDaRiavviare, togliLotto } from './utils/arretrate';
 import {
   calcolaConti, calcolaBaseline, intervalliCoperti, tempoCoperto,
   riferimentoAstinenza, giorniSenzaFumare, giorniZeroCoperti, eRicaduta,
@@ -20,7 +22,7 @@ import {
   recordSenzaFumare, mediaCoperta,
 } from './utils/conti';
 import { PREFISSO_DEFAULT } from './data/prefissi';
-import groups from './data/groups';
+import groups, { smista } from './data/groups';
 import {
   ConfirmDialog, RecoveryOtpModal, BottomNav, UmoreFoglio, Respiro, AggiungiTante,
 } from './components';
@@ -37,19 +39,23 @@ import './styles.css';
    ricreare l'array e il "vuoto" smette di essere vuoto per sempre, anche
    dopo un logout. Con la funzione ogni chiamata ha i suoi. */
 const vuotoLog = () => ({
-  v: 8, start: null, smessoDal: null, cigs: [], resists: [], tags: {}, checkins: [],
+  v: 9, start: null, smessoDal: null,
+  /* `eventi` È LA VERITÀ: ogni evento ha un identificativo suo, separato
+     dal momento in cui è successo. Il millisecondo dice QUANDO, non
+     QUALE — e finché le due cose erano la stessa, due sigarette allo
+     stesso millisecondo erano una sigaretta sola.
+     `cigs`, `resists`, `checkins` e `ricadute` restano array di
+     millisecondi perché tutta la matematica lavora così, ma sono
+     PROIEZIONI generate da normalizzaRegistro: si leggono, non si
+     scrivono. */
+  eventi: [],
+  cigs: [], resists: [], checkins: [], ricadute: [],
+  rimossi: [],                       // lapidi: identificativi, non istanti
+  tags: {},                          // indicizzate per identificativo
   groups: [], notify: true, avvisiCorpo: true, onboarded: false,
   profile: { motivo: '', baseline: null, prezzoPacchetto: null, perPacchetto: 20, sesso: 'non_detto' },
   plans: {}, tappeViste: { ref: null, idx: [] },
-  /* LE RICADUTE SONO UN INSIEME DI ISTANTI, non più un contatore.
-     Un contatore scalare non si fonde: due dispositivi che salgono da 3
-     a 4 ciascuno, riconciliati con «vince il più recente», danno 4 e non
-     5. Un insieme di istanti si fonde con l'unione, come le sigarette.
-     `ripartenzeBase` porta avanti il contatore delle versioni
-     precedenti senza inventare istanti che nessuno ha registrato, e il
-     numero mostrato è la somma dei due. */
-  ricadute: [], ripartenzeBase: 0, ripartenze: 0,
-  rimossi: { cigs: [], resists: [], checkins: [], ricadute: [] },
+  ripartenzeBase: 0, ripartenze: 0,
   orologi: {},
 });
 const UTENTE_VUOTO = {
@@ -77,7 +83,11 @@ export default function App() {
   const [dati, setDati] = useState(null);
   const [now, setNow] = useState(Date.now());
   const [tick, setTick] = useState(0);          // batte ogni secondo: fa muovere i contatori
-  const [ultimoTs, setUltimoTs] = useState(null);
+  /* L'IDENTIFICATIVO dell'ultima sigaretta registrata, non il suo
+     istante: serve a sapere quale annullare e a quale attaccare il
+     motivo, e due sigarette possono condividere il millisecondo. */
+  const [ultimoId, setUltimoId] = useState(null);
+  const [ultimoTs, setUltimoTs] = useState(null);   // solo per mostrarne l'ora
   const [craving, setCraving] = useState(false);
   const [respiro, setRespiro] = useState(false);          // respirazione guidata a schermo intero
   const [umore, setUmore] = useState(false);              // «come ti senti oggi?»
@@ -162,12 +172,26 @@ export default function App() {
     // ATTENZIONE: solo se il database c'è davvero. In modalità locale
     // groups.mine() torna [] per forza, e prendere quel [] per buono
     // cancellava la lista dei gruppi salvata sul dispositivo.
+    /* ATTENZIONE, e adesso per due motivi. Il primo: in modalità locale
+       `mine()` torna vuoto per forza, e prendere quel vuoto per buono
+       cancellava la lista salvata sul dispositivo. Il secondo, trovato
+       dall'audit: anche col database configurato la lettura può
+       FALLIRE — app aperta offline, sessione scaduta — e prima anche
+       quel fallimento arrivava qui come una lista vuota. Aprire l'app
+       senza rete faceva sparire i gruppi per tutta la sessione, e da
+       quel momento `salva()` non pubblicava più niente perché la lista
+       era vuota. Adesso una lettura fallita non tocca niente: resta
+       quella salvata, e il prossimo sync riuscito la aggiorna. */
     if (groups.disponibile()) {
-      const caricati = await groups.mine();
-      const vivi = caricati.map((g) => g.code);
-      merged.groups = vivi;
-      setGruppi(caricati);
-      setGruppoAttivo((prev) => (vivi.includes(prev) ? prev : vivi[0] || null));
+      const esito = await groups.mine();
+      if (esito.ok) {
+        const vivi = esito.gruppi.map((g) => g.code);
+        merged.groups = vivi;
+        setGruppi(esito.gruppi);
+        setGruppoAttivo((prev) => (vivi.includes(prev) ? prev : vivi[0] || null));
+      } else {
+        setGruppoAttivo((prev) => (merged.groups?.includes(prev) ? prev : merged.groups?.[0] || null));
+      }
     }
     /* `datiRef` PRIMA di `setDati`: il riferimento è quello che `salva()`
        legge come «com'era prima» per timbrare i campi cambiati, e lo
@@ -285,31 +309,58 @@ export default function App() {
     const codici = dati?.groups || [];
     if (!codici.length || !user.id) return;
 
-    const nuoviGruppi = [];
-    const nuoviMembri = {};
-    const morti = [];
+    /* UN ERRORE DI RETE NON È UNA RISPOSTA.
+       `fetch` adesso dice tre cose diverse — c'è, non c'è più, non lo so —
+       e solo la seconda autorizza a togliere il codice dalla lista. Sul
+       «non lo so» non si tocca NIENTE: né la lista, né la schermata, né
+       la classifica già a video. Prima il terzo caso non esisteva, e un
+       tunnel bastava a far uscire dai propri gruppi. */
+    const esiti = {};
+    const membriLetti = {};
     for (const code of codici) {
-      const g = await groups.fetch(code);
-      // fetch torna null se il gruppo è stato sciolto o se ne siamo stati
-      // rimossi: il codice va tolto dalla lista, altrimenti resta appeso e
-      // ogni publish successiva fallisce in silenzio fino al prossimo avvio.
-      if (!g) { morti.push(code); continue; }
-      nuoviGruppi.push(g);
-      nuoviMembri[code] = await groups.fetchMembers(code);
+      esiti[code] = await groups.fetch(code);
+      if (!esiti[code].ok || !esiti[code].gruppo) continue;
+      const m = await groups.fetchMembers(code);
+      // il gruppo c'è ma la sua classifica non si è potuta leggere:
+      // il codice resta vivo, i membri restano quelli di prima
+      if (m.ok) membriLetti[code] = m.membri;
     }
-    setGruppi(nuoviGruppi);
-    setMembriPerGruppo(nuoviMembri);
-    setUltimoSync(Date.now());
+    const { vivi, morti, incerti } = smista(codici, esiti);
+    const senzaMembri = vivi.filter((c) => !(c in membriLetti));
+    const daTenere = [...incerti, ...senzaMembri];
+
+    const nuoviGruppi = vivi.map((c) => esiti[c].gruppo);
+    setGruppi((prev) => (incerti.length
+      ? codici
+        .map((c) => nuoviGruppi.find((g) => g.code === c)
+          || (incerti.includes(c) ? prev.find((g) => g.code === c) : null))
+        .filter(Boolean)
+      : nuoviGruppi));
+    setMembriPerGruppo((prev) => {
+      if (!daTenere.length) return membriLetti;
+      const tenuti = {};
+      daTenere.forEach((c) => { if (prev[c]) tenuti[c] = prev[c]; });
+      return { ...tenuti, ...membriLetti };
+    });
+    // se non si è riusciti a leggere proprio niente, «aggiornato adesso»
+    // sarebbe una bugia: l'ora dell'ultimo sync non si muove
+    if (incerti.length < codici.length) setUltimoSync(Date.now());
+
+    const nuoviMembri = membriLetti;
 
     if (morti.length && datiRef.current) {
-      const vivi = codici.filter((c) => !morti.includes(c));
+      /* `codici` meno i morti, e NON `vivi`: fra i due c'è di mezzo
+         l'incerto, che deve restare nella lista proprio perché non
+         sappiamo cosa sia. Togliere anche quello vorrebbe dire far
+         rientrare dalla finestra il difetto appena chiuso. */
+      const restano = codici.filter((c) => !morti.includes(c));
       // datiRef e non l'updater funzionale di setDati: dentro l'updater non
       // vanno messi effetti collaterali (in StrictMode React lo esegue due
       // volte, e la scrittura partirebbe doppia).
-      const next = { ...datiRef.current, groups: vivi };
+      const next = { ...datiRef.current, groups: restano };
       setDati(next);
       writeStore(logKey(user.id), next);
-      setGruppoAttivo((prev) => (vivi.includes(prev) ? prev : vivi[0] || null));
+      setGruppoAttivo((prev) => (restano.includes(prev) ? prev : restano[0] || null));
     }
 
     if (silenzioso) return;
@@ -514,7 +565,7 @@ export default function App() {
     setActiveTab('oggi'); setDentroGruppo(false); setAuthMode('login');
     setAuthPhone(''); setAuthPaese(PREFISSO_DEFAULT);
     setAuthPassword(''); setAuthConfirmPassword(''); setAuthError('');
-    setIsAuthenticated(false); setDati(null); setUltimoTs(null);
+    setIsAuthenticated(false); setDati(null); setUltimoId(null);
     setCraving(false); setRespiro(false); setUmore(false);
     setTante(false); setLotto(null);
     setGruppi([]); setGruppoAttivo(null); setMembriPerGruppo({});
@@ -542,6 +593,7 @@ export default function App() {
           ...vuotoLog(), groups: dati.groups, notify: dati.notify, avvisiCorpo: dati.avvisiCorpo,
           onboarded: true, profile: dati.profile, plans: dati.plans,
           rimossi: seppellisciTutto(dati),
+          eventi: [],
           ripartenzeBase: 0,
           orologi: dati.orologi,
         });
@@ -550,7 +602,7 @@ export default function App() {
         // riferiti a eventi che non esistono più
         visti.current = {};
         writeStore(seenKey(user.id), {});
-        setUltimoTs(null); setConfirmModal(null); showToast('Storico azzerato.');
+        setUltimoId(null); setConfirmModal(null); showToast('Storico azzerato.');
       },
     });
   }
@@ -560,9 +612,26 @@ export default function App() {
       title: 'Eliminare l’account?',
       body: 'Questa azione è definitiva: perdi lo storico, il piano e il posto in classifica.',
       confirmLabel: 'Elimina account', danger: true,
+      /* «Account eliminato.» va detto solo se è successo davvero.
+         Prima l'esito non veniva letto: senza rete la cancellazione
+         falliva, l'app faceva comunque il logout e mostrava la conferma,
+         e l'utente restava convinto di non esistere più mentre account,
+         registro e sessione erano tutti ancora lì. Una transazione non
+         c'è e non la si inventa: si procede in ordine e ci si ferma al
+         primo passo che non riesce, lasciando lo stato locale coerente
+         con quello che è riuscito. */
       onConfirm: async () => {
-        for (const c of dati?.groups || []) await groups.leave(c, user.id);
-        await auth.deleteAccount(user.id);
+        const codici = dati?.groups || [];
+        const esito = await eliminaAccount({ codici, uid: user.id, groups, auth });
+        if (!esito.ok) {
+          /* Le uscite dai gruppi che sono riuscite sono definitive: la
+             lista locale deve dirlo, altrimenti l'app continua a
+             pubblicare su gruppi che ha già lasciato. */
+          if (esito.rimasti.length !== codici.length) salva({ ...dati, groups: esito.rimasti });
+          setConfirmModal(null);
+          showToast('Non è stato possibile eliminare l’account. Controlla la rete e riprova.');
+          return;
+        }
         await annullaTappe().catch(() => {});
         setConfirmModal(null); resetAuthState(); showToast('Account eliminato.');
       },
@@ -685,14 +754,15 @@ export default function App() {
 
   function handleExportCSV() {
     if (!dati) return;
+    /* Una riga per EVENTO. Prima si scorrevano le liste di istanti, quindi
+       due sigarette allo stesso millisecondo producevano una riga sola e
+       il file esportato conteneva meno sigarette del registro. */
+    const nomi = { cig: 'sigaretta', resist: 'voglia superata', checkin: 'giorno a zero', ricaduta: 'ricaduta' };
     const righe = [['data', 'ora', 'tipo', 'motivo']];
-    [...dati.cigs].sort((a, b) => a - b).forEach((ts) => {
-      righe.push([ymd(ts), ora(ts), 'sigaretta', dati.tags[ts] || '']);
+    [...(dati.eventi || [])].sort((a, b) => a.ts - b.ts).forEach((e) => {
+      if (e.tipo === 'ricaduta') return;      // è già raccontata dalla sigaretta
+      righe.push([ymd(e.ts), ora(e.ts), nomi[e.tipo] || e.tipo, dati.tags[e.id] || '']);
     });
-    [...dati.resists].sort((a, b) => a - b).forEach((ts) => {
-      righe.push([ymd(ts), ora(ts), 'voglia superata', '']);
-    });
-    (dati.checkins || []).forEach((ts) => righe.push([ymd(ts), ora(ts), 'giorno a zero', '']));
     const csv = righe.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
     const ok = scarica(csv, `smetto-registro-${ymd(Date.now())}.csv`, 'text/csv;charset=utf-8;');
     showToast(ok ? 'Registro scaricato ✅' : 'Non è stato possibile scaricare il file.');
@@ -700,16 +770,20 @@ export default function App() {
 
   function handleCheckin() {
     const ts = Date.now();
-    salva({ ...dati, checkins: [...(dati.checkins || []), ts] });
+    salva(aggiungiEvento(dati, 'checkin', ts));
     showToast('Segnato: oggi zero 🌱');
   }
 
   /* ---------------------------- conteggio ---------------------------- */
 
-  const apriFinestra = (ts) => {
+  /* La finestra dei 25 secondi in cui si può attaccare un motivo o
+     annullare. Tiene l'IDENTIFICATIVO della sigaretta, e il suo istante
+     solo per scriverlo a schermo. */
+  const apriFinestra = (id, ts) => {
+    setUltimoId(id);
     setUltimoTs(ts);
     clearTimeout(finestra.current);
-    finestra.current = setTimeout(() => setUltimoTs(null), 25000);
+    finestra.current = setTimeout(() => setUltimoId(null), 25000);
   };
 
   const minutiPer = MINUTI_PER_SIGARETTA[dati?.profile?.sesso || 'non_detto'];
@@ -728,14 +802,15 @@ export default function App() {
        fumo regolare il contatore arrivava a «è la 29ª volta che riparti». */
     const ricaduta = eRicaduta(dati, ts, SOGLIA_RICADUTA);
 
+    let next = aggiungiEvento(dati, 'cig', ts);
+    const idSigaretta = next.eventi[next.eventi.length - 1].id;
+    // la ricaduta è un evento come gli altri, con il suo identificativo:
+    // due dispositivi che ricadono non se ne perdono una
+    if (ricaduta) next = aggiungiEvento(next, 'ricaduta', ts);
     salva({
-      ...dati,
+      ...next,
       start: dati.start ?? ts,
-      cigs: [...dati.cigs, ts],
       tappeViste: { ref: ts, idx: [] },              // il conto del corpo riparte
-      // l'ISTANTE della ricaduta, non un contatore: si fonde come le
-      // sigarette, quindi due dispositivi non se ne perdono una
-      ricadute: ricaduta ? [...(dati.ricadute || []), ts] : (dati.ricadute || []),
     });
     setTappaBanner(null);
     // le tappe di recupero ripartono da questa sigaretta: a telefono chiuso
@@ -748,9 +823,9 @@ export default function App() {
          già la stessa domanda ("cosa è successo?") e con più spazio. Aprire
          anche la finestra vorrebbe dire ritrovarsi la stessa domanda una
          seconda volta, in piccolo, appena chiusa la schermata. */
-      setRiparti({ ts, pausa, frase: RILANCI[Math.floor(Math.random() * RILANCI.length)] });
+      setRiparti({ id: idSigaretta, ts, pausa, frase: RILANCI[Math.floor(Math.random() * RILANCI.length)] });
     } else {
-      apriFinestra(ts);
+      apriFinestra(idSigaretta, ts);
       showToast('Registrata. Nessun problema, si continua.');
     }
   }
@@ -838,13 +913,13 @@ export default function App() {
       ? Math.min(...nuovi.filter((t) => t >= dati.smessoDal))
       : null;
 
+    let next = aggiungiEventi(dati, 'cig', nuovi);
+    if (ricaduta) next = aggiungiEvento(next, 'ricaduta', nuoviMin);
     salva({
-      ...dati,
+      ...next,
       // il percorso comincia dalla prima sigaretta conosciuta, anche se
       // quella prima sigaretta la scopriamo adesso
       start: dati.start === null ? piuVecchia : Math.min(dati.start, piuVecchia),
-      cigs: [...dati.cigs, ...nuovi],
-      ricadute: ricaduta ? [...(dati.ricadute || []), nuoviMin] : (dati.ricadute || []),
       ...(riavvio === null ? {} : { tappeViste: { ref: riavvio, idx: [] } }),
     });
 
@@ -854,25 +929,56 @@ export default function App() {
     }
 
     setTante(false);
-    setUltimoTs(null);
-    setLotto({ ts: nuovi, quante: nuovi.length, quando: finestra.breve, prima: primaDiTutto });
+    setUltimoId(null);
+    const idsLotto = next.eventi.slice(primaDiTutto.eventi?.length || 0).map((e) => e.id);
+    /* `ts` NON è un doppione di `ids`: la card scrive «dalle 9:10 alle
+       11:40», e per dirlo servono gli ISTANTI, che gli identificativi non
+       contengono. Mancava, e la card leggeva `lotto.ts[0]` su un campo che
+       non c'era: la schermata Oggi andava in eccezione appena si
+       confermavano delle arretrate. `nuovi` esce già ordinato da
+       `distribuisci`, quindi primo e ultimo sono davvero primo e ultimo.
+       `riavvio` serve invece all'annullamento: dice se le tappe del corpo
+       erano state fatte ripartire da questo lotto, e solo in quel caso
+       vanno rimesse indietro. */
+    setLotto({
+      ids: idsLotto,
+      ts: nuovi,
+      quante: nuovi.length,
+      quando: finestra.breve,
+      riavvio,
+      prima: primaDiTutto,
+    });
     clearTimeout(timerLotto.current);
     timerLotto.current = setTimeout(() => setLotto(null), 40000);
   }
 
-  /* Annullare rimette esattamente il registro di prima invece di togliere
-     i timestamp uno per uno: `start` e `tappeViste` erano cambiati insieme
-     alle sigarette, e ricostruirli a ritroso è il modo migliore per
-     sbagliarli. */
+  /* ANNULLARE IL LOTTO DEVE TOGLIERE IL LOTTO, NON RIAVVOLGERE IL TEMPO.
+  
+     Qui prima si ripristinava l'istantanea `lotto.prima` e le si
+     applicavano le lapidi. Sembra equivalente e non lo è: fra
+     l'aggiunta e l'annullamento passano quaranta secondi, e in quei
+     quaranta secondi può succedere qualcosa. Si va su Aiuto, si apre la
+     voglia, si tocca «Ho fumato» — oppure arriva una fusione dall'altro
+     telefono. Quella sigaretta non è nell'istantanea, quindi tornando
+     indietro spariva: senza lapide, e non solo dal dispositivo, perché
+     il salvataggio successivo partiva con la revisione buona e la
+     cancellava anche dal database. Verificato.
+  
+     Adesso si parte dallo stato CORRENTE e si seppelliscono solo gli
+     identificativi del lotto. Le lapidi restano indispensabili: le
+     sigarette del lotto possono essere già arrivate al database o
+     all'altro dispositivo, e senza lapide tornerebbero indietro alla
+     prima fusione.
+  
+     Dall'istantanea si recupera solo quello che gli eventi non sanno
+     ricostruire da soli, cioè `start` e `tappeViste`. E nemmeno quelli
+     alla cieca. */
   function annullaLotto() {
     if (!lotto) return;
-    /* Rimettere il registro di prima non basta: le sigarette del lotto
-       possono essere già arrivate al database o all'altro dispositivo, e
-       senza lapidi tornerebbero indietro alla prima fusione. */
-    let prima = lotto.prima;
-    lotto.ts.forEach((t) => { prima = rimuoviIstante(prima, 'cigs', t); });
-    salva(prima);
-    riallineaTappe(lotto.prima.cigs);
+    const next = togliLotto(datiRef.current || dati, lotto, rimuoviEvento);
+    salva(next);
+    // dall'ultima sigaretta RIMASTA, che può essere più recente del lotto
+    riallineaTappe(next.cigs);
     setLotto(null);
     showToast('Annullato.');
   }
@@ -884,7 +990,7 @@ export default function App() {
      all'utente in quel momento: «saperlo serve». */
   function handleCausaRicaduta(causa) {
     if (!riparti?.ts || causa === '—') return;
-    salva({ ...dati, tags: { ...dati.tags, [riparti.ts]: causa } });
+    salva({ ...dati, tags: { ...dati.tags, [riparti.id]: causa } });
   }
 
   /* «Come ti senti oggi?» non è un sondaggio: è uno smistamento. Ogni
@@ -906,7 +1012,7 @@ export default function App() {
 
   function registraResistenza() {
     const ts = Date.now();
-    salva({ ...dati, start: dati.start ?? ts, resists: [...dati.resists, ts] });
+    salva({ ...aggiungiEvento(dati, 'resist', ts), start: dati.start ?? ts });
   }
 
   /* Il messaggio dopo una voglia superata annunciava «+20 min · +0,30 €».
@@ -939,44 +1045,51 @@ export default function App() {
      produceva — perché un solo tocco sulla X ne cancellasse due, con tutti
      i conteggi sbagliati da lì in poi e nessun modo di accorgersene.
      L'etichetta si toglie solo se in quell'istante non resta niente. */
-  /* CANCELLARE NON È FILTRARE. Togliere l'istante dalla lista lasciava
-     l'altro dispositivo — e il database — con la sua copia intatta, e
-     alla prima fusione la sigaretta tornava dentro: l'unione non sa
-     distinguere «io non ce l'ho» da «io l'ho cancellata». La lapide
-     (`rimossi`) rende la cancellazione un fatto che viaggia insieme ai
-     dati, invece di un'assenza che si può interpretare al contrario. */
-  function togliUna(ts) {
-    if (!dati.cigs.includes(ts)) return null;
-    const senza = rimuoviIstante(dati, 'cigs', ts);
-    const tags = { ...dati.tags };
-    delete tags[ts];
-    return { cigs: senza.cigs, rimossi: senza.rimossi, tags };
+  /* CANCELLARE NON È FILTRARE, E NON SI CANCELLA PER ISTANTE.
+
+     Due correzioni sovrapposte, in ordine.
+     La prima: togliere l'elemento dalla lista lasciava l'altro
+     dispositivo — e il database — con la sua copia intatta, e alla prima
+     fusione la sigaretta tornava dentro. L'unione non sa distinguere «io
+     non ce l'ho» da «io l'ho cancellata»: serve una lapide.
+     La seconda: la lapide era l'ISTANTE, quindi cancellare una sigaretta
+     ne cancellava anche un'altra registrata nello stesso millisecondo su
+     un altro dispositivo. Adesso la lapide è l'identificativo, e colpisce
+     un evento solo — quello che si è chiesto di cancellare. */
+  function togliUno(id) {
+    if (!dati.eventi?.some((e) => e.id === id)) return null;
+    return rimuoviEvento(dati, id);
   }
 
   function handleAnnulla() {
-    if (!ultimoTs) return;
-    const next = togliUna(ultimoTs);
-    if (!next) { setUltimoTs(null); return; }
-    salva({ ...dati, ...next });
+    if (!ultimoId) return;
+    const next = togliUno(ultimoId);
+    if (!next) { setUltimoId(null); return; }
+    salva(next);
     riallineaTappe(next.cigs);
-    setUltimoTs(null);
+    setUltimoId(null);
   }
 
-  function handleElimina(ts) {
-    const next = togliUna(ts);
+  function handleElimina(id) {
+    const evento = dati.eventi?.find((e) => e.id === id);
+    if (!evento) return;
+    const next = togliUno(id);
     if (!next) return;
-    const eraLUltima = ts === maxTs(dati.cigs);
-    salva({ ...dati, ...next });
-    if (ts === ultimoTs) setUltimoTs(null);
+    const eraLUltima = evento.ts === maxTs(dati.cigs);
+    salva(next);
+    if (id === ultimoId) setUltimoId(null);
     // rilevante solo se abbiamo tolto proprio l'ultima sigaretta cronologica
     if (eraLUltima) riallineaTappe(next.cigs);
   }
 
-  function handleTag(ts, t) {
+  /* Le etichette seguono l'IDENTIFICATIVO della sigaretta, non il suo
+     istante: due sigarette allo stesso millisecondo hanno due motivi
+     diversi, e prima ne condividevano uno. */
+  function handleTag(id, t) {
     const tags = { ...dati.tags };
-    if (tags[ts] === t) delete tags[ts]; else tags[ts] = t;
+    if (tags[id] === t) delete tags[id]; else tags[id] = t;
     salva({ ...dati, tags });
-    setUltimoTs(null);
+    setUltimoId(null);
   }
 
   function handleSalvaPiano(trigger, testo) {
@@ -1078,8 +1191,10 @@ export default function App() {
        sembrare ogni causa meno rilevante di quanto i dati dicano. */
     const conteggio = {};
     let taggateSett = 0;
-    cigs.filter((t) => t >= inizioSett).forEach((t) => {
-      const g = dati.tags[t];
+    // le etichette seguono l'identificativo dell'evento, non il suo istante
+    (dati.eventi || []).forEach((e) => {
+      if (e.tipo !== 'cig' || e.ts < inizioSett) return;
+      const g = dati.tags[e.id];
       if (g) { conteggio[g] = (conteggio[g] || 0) + 1; taggateSett += 1; }
     });
     const topTrigger = Object.entries(conteggio).sort((a, b) => b[1] - a[1])[0] || null;
@@ -1386,14 +1501,21 @@ export default function App() {
     };
   }, [dati, now, ritmo, intervalli]);
 
+  /* Il registro porta gli EVENTI, non gli istanti: la riga da cancellare
+     e il motivo da mostrare vanno riferiti all'identificativo, altrimenti
+     due sigarette nello stesso millisecondo si scambiano il motivo e un
+     tocco sulla X ne cancella due. */
   const registro = useMemo(() => {
     if (!dati) return [];
     const g = new Map();
-    [...dati.cigs].sort((a, b) => b - a).forEach((t) => {
-      const k = sod(t);
-      if (!g.has(k)) g.set(k, []);
-      g.get(k).push(t);
-    });
+    (dati.eventi || [])
+      .filter((e) => e.tipo === 'cig')
+      .sort((a, b) => (b.ts - a.ts) || (a.id < b.id ? -1 : 1))
+      .forEach((e) => {
+        const k = sod(e.ts);
+        if (!g.has(k)) g.set(k, []);
+        g.get(k).push(e);
+      });
     return [...g.entries()].slice(0, 14);
   }, [dati]);
 
@@ -1555,7 +1677,8 @@ export default function App() {
               {activeTab === 'oggi' && (
                 <OggiScreen
                   nome={user.nickname || user.name} s={s} conti={conti} now={now}
-                  giorniPercorso={giorniPercorso} ultimoTs={ultimoTs} gruppi={gruppi}
+                  giorniPercorso={giorniPercorso} ultimoId={ultimoId} ultimoTs={ultimoTs}
+                  gruppi={gruppi}
                   tappaBanner={tappaBanner} onChiudiBanner={() => setTappaBanner(null)}
                   checkedIn={checkedInOggi} lotto={lotto}
                   onFuma={registraSigaretta} onUmore={() => setUmore(true)}
@@ -1563,7 +1686,7 @@ export default function App() {
                   inAstinenza={Number.isFinite(dati?.smessoDal)} onCheckin={handleCheckin}
                   onTante={() => setTante(true)} onAnnullaLotto={annullaLotto}
                   onVediRegistro={() => { setActiveTab('percorso'); setPercorsoSezione('registro'); setLotto(null); }}
-                  onAnnulla={handleAnnulla} onTag={handleTag} onSkipTag={() => setUltimoTs(null)}
+                  onAnnulla={handleAnnulla} onTag={handleTag} onSkipTag={() => setUltimoId(null)}
                   onVaiAlPercorso={() => { setActiveTab('percorso'); setPercorsoSezione('numeri'); }}
                 />
               )}

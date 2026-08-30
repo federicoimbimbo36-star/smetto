@@ -21,8 +21,8 @@
 /* quante persone ci sono), che passa da una funzione dedicata.         */
 /* ------------------------------------------------------------------ */
 
-import { supabase } from '../auth/supabaseClient';
-import { ymd, maxTs } from '../utils/format';
+import { supabase } from '../auth/supabaseClient.js';
+import { ymd, maxTs } from '../utils/format.js';
 
 const ms = (iso) => (iso ? new Date(iso).getTime() : null);
 
@@ -114,30 +114,49 @@ const groups = {
     return { code: g.code, name: g.name, memberCount: g.member_count };
   },
 
-  /* Il gruppo con l'elenco dei suoi iscritti. Torna null se il gruppo non
-     esiste più o se non ne facciamo (più) parte: chi chiama lo toglie
-     dalla propria lista. */
+  /* Il gruppo con l'elenco dei suoi iscritti.
+  
+     TRE ESITI, NON DUE. Prima ne tornava uno solo — `null` — e dentro quel
+     `null` ci stavano due cose che non hanno niente in comune: «il gruppo
+     non esiste più, o ne sei stato tolto» e «non sono riuscito a
+     chiederlo». Chi chiama le trattava allo stesso modo, cioè toglieva il
+     codice dalla lista: bastava un tunnel o un Wi-Fi che oscilla perché
+     l'app facesse uscire dai propri gruppi, e non si rientrava fino al
+     riavvio.
+  
+       { ok: true,  gruppo: {...} }  → c'è
+       { ok: true,  gruppo: null  }  → la domanda è arrivata: non c'è più
+       { ok: false }                 → non lo so, e nel dubbio non si tocca niente
+  
+     `ok` dice se la RISPOSTA è affidabile, `gruppo` dice cosa contiene. */
   async fetch(code) {
-    if (spento()) return null;
+    if (spento()) return { ok: false };
     const { data, error } = await supabase
       .from('groups')
       .select('code, name, owner_id, created_at, group_members(user_id, name, color, joined_at)')
       .eq('code', code)
       .maybeSingle();
-    if (error || !data) return null;
-    return componiGruppo(data);
+    // errore = la domanda non è arrivata a destinazione: non è una risposta
+    if (error) return { ok: false, errore: error.message };
+    // nessun errore e nessuna riga: questa sì è una risposta, ed è «non c'è»
+    return { ok: true, gruppo: data ? componiGruppo(data) : null };
   },
 
   /* Tutti i gruppi di cui faccio parte, presi dal database invece che
      dalla lista salvata sul dispositivo: è così che un telefono nuovo
-     ritrova i gruppi senza che nessuno reinserisca i codici. */
+     ritrova i gruppi senza che nessuno reinserisca i codici.
+  
+     Qui gli esiti sono due, perché «nessun gruppo» è una risposta
+     legittima: quello che non deve più succedere è che una LETTURA
+     FALLITA venga scambiata per «non fai parte di niente» e cancelli la
+     lista salvata sul dispositivo. */
   async mine() {
-    if (spento()) return [];
+    if (spento()) return { ok: false, gruppi: [] };
     const { data, error } = await supabase
       .from('groups')
       .select('code, name, owner_id, created_at, group_members(user_id, name, color, joined_at)');
-    if (error || !data) return [];
-    return data.map(componiGruppo);
+    if (error || !data) return { ok: false, gruppi: [], errore: error?.message };
+    return { ok: true, gruppi: data.map(componiGruppo) };
   },
 
   async join(code, me) {
@@ -149,9 +168,9 @@ const groups = {
     });
     if (error) return { error: error.message };
     if (!data) return { error: 'codice' };
-    const completo = await this.fetch(data.code);
+    const esito = await this.fetch(data.code);
     return {
-      group: completo || {
+      group: esito.gruppo || {
         code: data.code,
         name: data.name,
         ownerId: data.owner_id,
@@ -216,15 +235,43 @@ const groups = {
     if (error) console.warn('pubblicazione dei conteggi non riuscita:', error.message);
   },
 
+  /* Stessa regola di `fetch`: una classifica vuota e una classifica che
+     non si è riusciti a leggere non sono la stessa cosa. La seconda non
+     deve svuotare quella che l'utente ha già davanti. */
   async fetchMembers(code) {
-    if (spento()) return [];
+    if (spento()) return { ok: false, membri: [] };
     const { data, error } = await supabase
       .from('group_members')
       .select('user_id, name, color, days, resists, checkins, total, last_event, last_resist, last_attivita, smesso_dal, updated_at')
       .eq('code', code);
-    if (error || !data) return [];
-    return data.map(scheda);
+    if (error || !data) return { ok: false, membri: [], errore: error?.message };
+    return { ok: true, membri: data.map(scheda) };
   },
 };
+
+/* ------------------------------------------------------------------ */
+/*  CHI È VIVO, CHI È MORTO, CHI NON SI SA                             */
+/*                                                                     */
+/*  Sta qui e non dentro App.jsx per una ragione sola: è LA REGOLA che  */
+/*  decide se un gruppo viene tolto dalla lista, ed è esattamente la    */
+/*  cosa che non ci si può permettere di verificare a occhio. Funzione  */
+/*  pura di (codici, esiti): la si prova senza rete, senza React e      */
+/*  senza database.                                                    */
+/*                                                                     */
+/*  L'invariante da non rompere mai: un codice finisce fra i `morti`    */
+/*  SOLO se la sua lettura è riuscita e ha risposto «non c'è».          */
+/* ------------------------------------------------------------------ */
+export function smista(codici, esiti) {
+  const vivi = [];
+  const morti = [];
+  const incerti = [];
+  codici.forEach((code) => {
+    const e = esiti[code];
+    if (!e || !e.ok) incerti.push(code);
+    else if (!e.gruppo) morti.push(code);
+    else vivi.push(code);
+  });
+  return { vivi, morti, incerti };
+}
 
 export default groups;

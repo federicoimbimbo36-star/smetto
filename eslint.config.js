@@ -30,7 +30,7 @@ export default [
      modo in cui i controlli riportano l'esito, quindi la regola che lo
      vieta non si applica. */
   {
-    files: ['verifica/**/*.mjs', 'verifica/**/*.js'],
+    files: ['verifica/**/*.mjs', 'verifica/**/*.js', 'verifica/**/*.jsx'],
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'module',
