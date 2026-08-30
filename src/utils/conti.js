@@ -1,5 +1,5 @@
 import { giorniFra, dayDiff, addGiorni, sod, maxTs } from './format.js';
-import { TOLLERANZA_COPERTURA, DAY } from '../constants.js';
+import { TOLLERANZA_COPERTURA, SOGLIA_RICADUTA, DAY } from '../constants.js';
 
 /* ------------------------------------------------------------------ */
 /*  IL MOTORE DEI NUMERI                                               */
@@ -113,9 +113,18 @@ export function intervalliCoperti(dati, tolleranza = TOLLERANZA_COPERTURA) {
   return uniti;
 }
 
+/* ================================================================== */
+/*  D3  ·  IL TEMPO CONTATO                                            */
+/* ================================================================== */
 /* Giorni coperti dentro un intervallo, in giorni frazionari e con l'ora
    legale al posto giusto (giorniFra conta i giorni interi per calendario
-   e le due code come frazione del giorno a cui appartengono). */
+   e le due code come frazione del giorno a cui appartengono).
+
+   Invariante: 0 ≤ tempoContato ≤ giorniFra(start, adesso). L'uguaglianza
+   vale su TUTTO il percorso solo se non ci sono buchi; dopo una
+   dichiarazione, invece, il tratto [smessoDal, adesso] è coperto per
+   intero sempre — quello che c'era prima resta com'era, perché la
+   dichiarazione non copre all'indietro. */
 export function tempoCoperto(intervalli, da, a) {
   let tot = 0;
   for (const [i0, i1] of intervalli) {
@@ -137,7 +146,7 @@ export function inizioCertificato(intervalli, adesso) {
 export const copertoAdesso = (intervalli, adesso) => inizioCertificato(intervalli, adesso) !== null;
 
 /* ================================================================== */
-/*  D3  ·  IL RIFERIMENTO DELL'ASTINENZA                               */
+/*  D4  ·  IL RIFERIMENTO DELL'ASTINENZA                               */
 /* ================================================================== */
 /* Da quando dura il periodo senza fumare che stiamo mostrando.
 
@@ -161,20 +170,37 @@ export function riferimentoAstinenza(dati, adesso, intervalli) {
   return Math.max(ultima, certificato);
 }
 
-/* Giorni senza fumare: TEMPO TRASCORSO in blocchi di 24 ore, non giorni
-   di calendario. È la stessa grandezza che alimenta il numero grande
-   della Home e le tappe del corpo, quindi non possono contraddirsi.
-   Volutamente diversa da `giorniPercorso`, che è di calendario e non
+/* ================================================================== */
+/*  D5  ·  GIORNI SENZA FUMARE                                         */
+/* ================================================================== */
+/* TEMPO TRASCORSO in blocchi di 24 ore, non giorni di calendario. È la
+   stessa grandezza che alimenta il numero grande della Home, le tappe del
+   corpo e il record, quindi non possono contraddirsi.
+   Volutamente diversa da `giorniPercorso` (D6), che è di calendario e non
    torna mai indietro. */
 export function giorniSenzaFumare(rif, adesso) {
-  if (rif === null || rif === undefined) return null;
+  if (rif === null || rif === undefined || !Number.isFinite(rif)) return null;
   return Math.floor(Math.max(0, adesso - rif) / DAY);
+}
+
+/* ================================================================== */
+/*  D6  ·  GIORNI DI PERCORSO                                          */
+/* ================================================================== */
+/* Giorni di CALENDARIO dall'inizio del percorso. Unità volutamente
+   diversa da D5: uno è tempo trascorso, l'altro sono giorni sul
+   calendario. NON si azzera mai, nemmeno dopo una ricaduta — è il numero
+   su cui cresce la pianta.
+   Stava scritto a mano dentro App.jsx: da qui in poi lo calcola questa
+   funzione, così l'invariante «non torna indietro» si può verificare. */
+export function giorniPercorso(dati, adesso) {
+  if (!dati?.start || !Number.isFinite(dati.start)) return 0;
+  return Math.max(0, dayDiff(dati.start, adesso));
 }
 
 export const inAstinenzaDichiarata = (dati) => Number.isFinite(dati?.smessoDal);
 
 /* ================================================================== */
-/*  D4  ·  LA RICADUTA                                                 */
+/*  D8  ·  LA RICADUTA                                                 */
 /* ================================================================== */
 /* Durante un'astinenza dichiarata QUALSIASI sigaretta è una ricaduta,
    anche a tre ore dalla precedente. Fuori dall'astinenza serve una pausa
@@ -184,7 +210,7 @@ export const inAstinenzaDichiarata = (dati) => Number.isFinite(dati?.smessoDal);
 
    La seconda condizione evita di contarne un'altra venti minuti dopo:
    solo la PRIMA sigaretta dopo la dichiarazione è la ricaduta. */
-export function eRicaduta(dati, ts, soglia) {
+export function eRicaduta(dati, ts, soglia = SOGLIA_RICADUTA) {
   const precedente = maxTs(dati?.cigs);
   const dich = Number.isFinite(dati?.smessoDal) ? dati.smessoDal : null;
   const primaDopoLaDichiarazione = dich !== null && (precedente === null || precedente < dich);
@@ -192,8 +218,30 @@ export function eRicaduta(dati, ts, soglia) {
   return primaDopoLaDichiarazione || pausaLunga;
 }
 
+/* Le SIGARETTE ARRETRATE durante un'astinenza dichiarata.
+
+   La regola dice che durante un'astinenza dichiarata qualsiasi sigaretta
+   registrata è una ricaduta, e le arretrate non facevano eccezione a
+   parole ma la facevano nei fatti: `registraArretrate` non passava da
+   `eRicaduta`, quindi chi dichiarava di aver smesso e poi metteva in
+   ordine il registro segnando tre sigarette di ieri vedeva ripartire il
+   contatore dei giorni — perché il riferimento si sposta da solo — ma
+   `ripartenze` restava fermo. Due numeri che raccontavano due storie.
+
+   Qui NON si usa `eRicaduta` così com'è: la sua seconda condizione (la
+   pausa lunga) scatterebbe anche fuori dall'astinenza, e mettere in
+   ordine il registro non è ricadere. Conta solo la prima sigaretta che
+   cade dopo la dichiarazione. */
+export function ricadutaArretrate(dati, nuovi) {
+  const dich = Number.isFinite(dati?.smessoDal) ? dati.smessoDal : null;
+  if (dich === null) return false;
+  const giaDopo = (dati?.cigs || []).some((t) => Number.isFinite(t) && t >= dich);
+  if (giaDopo) return false;
+  return (nuovi || []).some((t) => Number.isFinite(t) && t >= dich);
+}
+
 /* ================================================================== */
-/*  D5  ·  GIORNI A ZERO (solo in fase di riduzione)                   */
+/*  D10 ·  GIORNI A ZERO (solo in fase di riduzione)                   */
 /* ================================================================== */
 /* Un giorno conta come «a zero» se è COMPLETO (oggi non è finito, quindi
    non partecipa), INTERAMENTE COPERTO e senza sigarette registrate.
@@ -206,6 +254,11 @@ export function eRicaduta(dati, ts, soglia) {
 export function giorniZeroCoperti(dati, adesso, intervalli, finestra = 30) {
   if (!dati?.start) return 0;
   const ints = intervalli || intervalliCoperti(dati);
+  /* `dati.cigs` può non esserci: il registro arriva da fuori (storage, e un
+     domani da un backup JSON reimportato) e qui dentro si passa anche da
+     `mese`, che non lo ripulisce. Senza questa riga bastava una chiave
+     mancante per far esplodere l'intera schermata dei Numeri. */
+  const cigs = Array.isArray(dati.cigs) ? dati.cigs : [];
   const oggiTs = sod(adesso);
   const n = Math.min(finestra, dayDiff(dati.start, adesso));
   let zero = 0;
@@ -214,13 +267,75 @@ export function giorniZeroCoperti(dati, adesso, intervalli, finestra = 30) {
     const fine = addGiorni(g, 1);
     const tuttoCoperto = ints.some(([da, a]) => da <= g && a >= fine);
     if (!tuttoCoperto) continue;
-    if (!dati.cigs.some((t) => t >= g && t < fine)) zero += 1;
+    if (!cigs.some((t) => t >= g && t < fine)) zero += 1;
   }
   return zero;
 }
 
 /* ================================================================== */
-/*  D6  ·  LO SCARTO DAL RITMO, E POI I SOLDI                          */
+/*  D12 ·  IL RECORD SENZA FUMARE                                      */
+/* ================================================================== */
+/* «Assenza di dati ≠ zero» valeva per i contatori e per i giorni a
+   zero, non qui: il record scorreva le sigarette due a due e prendeva
+   la distanza più grande, senza chiedersi cosa fosse successo in mezzo.
+
+   Chi spariva per dieci giorni e poi registrava una sigaretta si vedeva
+   assegnare un record di dieci giorni senza fumare — dieci giorni in cui
+   l'app non sapeva niente, ed è la stessa identica cosa che la copertura
+   esiste per non pagare. Ed è peggio che nei contatori: un record resta
+   scritto, diventa il numero da battere, e sta accanto a «il tuo record
+   senza fumare» come se qualcuno l'avesse verificato.
+
+   REGOLA, coerente con D2 e D3: una pausa fra due sigarette conta come
+   record solo se è INTERAMENTE dentro un tratto coperto. Con la
+   tolleranza a 48 ore questo vuol dire che una pausa più lunga di due
+   giorni conta solo se chi l'ha fatta si è fatto vivo nel frattempo —
+   una voglia superata, un «oggi zero», o una dichiarazione di aver
+   smesso, che copre tutto da lì in avanti. Che è esattamente la persona
+   che quel record se lo merita.
+
+   La pausa IN CORSO si misura dal riferimento (D4), che è già prudente
+   per costruzione, e vale sempre. */
+export function recordSenzaFumare(dati, adesso, intervalli, rif) {
+  if (!dati?.start) return null;
+  const ints = intervalli || intervalliCoperti(dati);
+  const cigs = [...(Array.isArray(dati.cigs) ? dati.cigs : [])]
+    .filter((t) => Number.isFinite(t)).sort((a, b) => a - b);
+
+  const riferimento = rif === undefined ? riferimentoAstinenza(dati, adesso, ints) : rif;
+  let piu = riferimento === null ? 0 : Math.max(0, adesso - riferimento);
+
+  const coperta = (da, a) => ints.some(([i0, i1]) => i0 <= da && i1 >= a);
+  for (let i = 1; i < cigs.length; i += 1) {
+    const durataPausa = cigs[i] - cigs[i - 1];
+    if (durataPausa > piu && coperta(cigs[i - 1], cigs[i])) piu = durataPausa;
+  }
+  if (piu === 0 && cigs.length === 0 && riferimento === null) return null;
+  return piu;
+}
+
+/* ================================================================== */
+/*  LA MEDIA DI UN PERIODO, SUI SOLI GIORNI COPERTI                    */
+/* ================================================================== */
+/* Stessa regola dei soldi, applicata alle medie: dividere le sigarette
+   registrate per i giorni di calendario significa contare come «zero»
+   i giorni in cui l'app non sapeva niente. Non è un dettaglio estetico,
+   perché da `media7` esce la proiezione a un anno: sparire per tre
+   giorni su sette faceva scendere la media del 43% e saliva della
+   stessa quota il risparmio annunciato per i dodici mesi successivi.
+
+   Torna `null` quando il periodo è coperto per meno di mezzo giorno:
+   una media costruita su qualche ora non è una media, e chi la mostra
+   scrive un trattino. */
+export function mediaCoperta(cigs, intervalli, da, a) {
+  const giorni = tempoCoperto(intervalli || [], da, a);
+  if (!(giorni >= 0.5)) return null;
+  const n = (Array.isArray(cigs) ? cigs : []).filter((t) => t >= da && t < a).length;
+  return n / giorni;
+}
+
+/* ================================================================== */
+/*  D7  ·  LO SCARTO DAL RITMO, E POI I SOLDI                          */
 /* ================================================================== */
 /* Sono due nature diverse di numero e vanno tenute separate, perché
    l'interfaccia non deve poter scrivere un meno davanti alla parola
@@ -257,6 +372,11 @@ export function calcolaConti(base, adesso = Date.now()) {
      mostrare. Chi chiama distingue i due casi (manca il prezzo / manca il
      ritmo) e lo dice all'utente invece di mostrare uno zero. */
   if (!baselinePronta) return null;
+  /* Nessun calcolo principale deve poter produrre NaN o Infinity. Il ritmo
+     e il prezzo unitario sono i due moltiplicatori da cui passa TUTTO:
+     basta uno dei due non finito perché ogni cifra della schermata
+     diventi «NaN €», che è peggio di una schermata vuota. */
+  if (!Number.isFinite(baseline) || !Number.isFinite(unit) || !Number.isFinite(minPer)) return null;
 
   const attese = (da) => baseline * tempoCoperto(intervalli, Math.max(da, startTs), adesso);
 
@@ -270,9 +390,9 @@ export function calcolaConti(base, adesso = Date.now()) {
      1.251 € alle 01:00 e 1.095 € alle 21:00 con gli stessi identici dati.
      Finché non c'è nemmeno un giorno pieno vale null, e chi la mostra
      scrive un trattino: più onesto di una stima fatta su mezza giornata. */
-  const scartoAnno = mediaOra === null || mediaOra === undefined
-    ? null
-    : (baseline - mediaOra) * 365;
+  const scartoAnno = Number.isFinite(mediaOra)
+    ? (baseline - mediaOra) * 365
+    : null;
 
   const soldiTot = separa(scartoRitmo, unit);
   const soldiOggi = separa(scartoOggi, unit);
@@ -343,7 +463,7 @@ export function calcolaConti(base, adesso = Date.now()) {
        pieno del fumo, quello che resta anche mentre stai andando bene. */
     minutiPersiTotali: totCigs * minPer,
     minutiPersiOggi: oggiFumate * minPer,
-    minutiAnnoRitmo: mediaOra === null || mediaOra === undefined ? null : mediaOra * 365 * minPer,
+    minutiAnnoRitmo: Number.isFinite(mediaOra) ? mediaOra * 365 * minPer : null,
 
     curva,
   };

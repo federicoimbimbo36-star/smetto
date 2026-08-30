@@ -5,179 +5,126 @@
 /* (utils/storage.js) e quindi tutto il registro personale dell'app.    */
 /* Va importato UNA VOLTA sola in main.jsx, PRIMA di App.               */
 /*                                                                     */
-/* Come funziona:                                                       */
-/*  - la VERITÀ sta sul database, nella tabella user_kv: una riga per   */
-/*    chiave per utente, che la RLS rende illeggibile a chiunque altro. */
-/*    È questo che fa seguire il tuo registro da un dispositivo         */
-/*    all'altro invece di lasciarlo prigioniero di un telefono.         */
-/*  - la copia locale (windowStorage.js) resta davanti come cache:      */
-/*    l'app si apre subito con i dati che ha, e se la rete manca si     */
-/*    continua a registrare lo stesso.                                  */
+/* Questo file adesso fa una cosa sola: COLLEGARE. La logica di         */
+/* sincronizzazione — fusione, revisioni, coda, tentativi — sta in      */
+/* utils/sincronizza.js, dove si può verificare con un database finto.  */
+/* Prima stava qui, attaccata al client Supabase e a window, e quindi   */
+/* non si poteva provare: la parte che decide se una sigaretta          */
+/* sopravvive a un timeout non è la parte da guardare a occhio.         */
 /*                                                                     */
-/* Le scritture non riuscite non si perdono: finiscono in coda e        */
-/* vengono ritentate, anche quando il dispositivo torna online. Questa  */
-/* è la parte che conta: una sigaretta registrata in ascensore deve     */
-/* arrivare al database, non sparire.                                   */
+/* ------------------------------------------------------------------ */
+/*  LA REGOLA                                                           */
+/*                                                                     */
+/*    UNA SIGARETTA REGISTRATA NON PUÒ SPARIRE.                         */
+/*                                                                     */
+/*  Né per un refresh, né per un timeout, né perché la stessa persona   */
+/*  ha due telefoni o due schede aperte. Prima i modi di perderla erano */
+/*  quattro, tutti raggiungibili senza fare niente di strano:           */
+/*                                                                     */
+/*  1. il remoto vecchio sovrascriveva il locale nuovo dopo un timeout; */
+/*  2. il remoto vinceva sempre, quindi il lavoro fatto offline spariva */
+/*     alla prima lettura riuscita;                                     */
+/*  3. la coda viveva in memoria e un refresh la azzerava;              */
+/*  4. l'upsert era «l'ultimo che scrive vince»: due dispositivi, cento */
+/*     sigarette a testa, una registrata su ciascuno, risultato 101.    */
 /* ------------------------------------------------------------------ */
 
 import { supabase, supabaseConfigurato } from './auth/supabaseClient';
 import localKV from './windowStorage';
+import { fondiValore } from './utils/fusione';
+import { creaKvSincronizzato } from './utils/sincronizza';
 
-async function utenteCorrente() {
-  // getSession legge la sessione già in memoria/localStorage: non fa
-  // una chiamata di rete a ogni lettura.
-  const { data } = await supabase.auth.getSession();
-  return data?.session?.user?.id || null;
-}
-
-/* ------------------------------------------------------------------ */
-/* Il patto dichiarato qui sopra era: «l'app si apre subito con i dati  */
-/* che ha». Non era vero. La lettura aspettava comunque la risposta del */
-/* database, e con rete lenta o assente — metropolitana, aereo, hotspot */
-/* morto — l'app restava ferma su "Verifica sessione…" fino al timeout  */
-/* interno di fetch, che può essere di decine di secondi.               */
-/*                                                                     */
-/* Adesso l'attesa ha una scadenza: superata quella si va avanti con la */
-/* copia sul dispositivo. La risposta, se arriva dopo, aggiorna         */
-/* comunque la cache — non si butta via niente, si smette solo di       */
-/* aspettarla per mostrare qualcosa.                                    */
-/* ------------------------------------------------------------------ */
-const ATTESA_RETE = 3500;
-const SCADUTA = Symbol('scaduta');
-
-/* Trasforma il thenable pigro di Supabase in una promise vera che non
-   rigetta mai: un errore di rete torna come { error }, come farebbe il
-   client stesso. Così chi chiama non deve avvolgere tutto in try/catch. */
-const promessaVera = (q) => Promise.resolve(q).then((r) => r, (e) => ({ error: e }));
-
-function conScadenza(promessa, ms = ATTESA_RETE) {
-  return Promise.race([
-    promessa,
-    new Promise((resolve) => { setTimeout(() => resolve(SCADUTA), ms); }),
-  ]);
-}
-
-/* chiavi in attesa di essere scritte sul database (chiave → stringa JSON) */
-const inCoda = new Map();
-let timerCoda = null;
-
-async function svuotaCoda() {
-  if (!inCoda.size) return;
-  const uid = await utenteCorrente();
-  if (!uid) return;
-
-  for (const [key, value] of [...inCoda.entries()]) {
-    const esito = await conScadenza(promessaVera(value === null
-      ? supabase.from('user_kv').delete().eq('user_id', uid).eq('key', key)
-      : supabase.from('user_kv')
-        .upsert({ user_id: uid, key, value: JSON.parse(value) }, { onConflict: 'user_id,key' })));
-    // se scade non si toglie dalla coda: sarà il prossimo giro a riprovare
-    if (esito !== SCADUTA && !esito.error) inCoda.delete(key);
-  }
-
-  if (inCoda.size && !timerCoda) {
-    timerCoda = setTimeout(() => { timerCoda = null; svuotaCoda(); }, 20000);
-  }
-}
-
-function accodaERitenta(key, value) {
-  inCoda.set(key, value);
-  if (!timerCoda) {
-    timerCoda = setTimeout(() => { timerCoda = null; svuotaCoda(); }, 5000);
-  }
-}
-
-if (supabaseConfigurato) {
-  window.addEventListener?.('online', () => { svuotaCoda(); });
-  // appena si entra in un account, si prova a consegnare quello che era
-  // rimasto in sospeso
-  supabase.auth.onAuthStateChange((_evento, sessione) => { if (sessione) svuotaCoda(); });
-}
-
-const cloudKV = {
-  async get(key) {
-    const locale = await localKV.get(key);
-    const uid = await utenteCorrente();
-    if (!uid) return locale;
-
-    /* Promise.resolve() una volta sola, e poi si riusa quella.
-       I query builder di Supabase sono "thenable pigri": partono quando
-       qualcuno chiama .then(), e chiamarlo due volte manda DUE richieste.
-       Qui la promise serve sia alla gara col timeout sia al ramo che
-       riallinea la cache dopo, quindi va materializzata prima. */
-    const lettura = promessaVera(supabase
-      .from('user_kv')
-      .select('value')
-      .eq('user_id', uid)
-      .eq('key', key)
-      .maybeSingle());
-
-    const esito = await conScadenza(lettura);
-
-    if (esito === SCADUTA) {
-      // il database ci ha messo troppo: si parte con la cache locale e si
-      // lascia comunque arrivare la risposta, che riallinea la cache per
-      // la prossima lettura invece di andare persa
-      lettura.then((r) => {
-        if (r && !r.error && r.data) localKV.set(key, JSON.stringify(r.data.value));
-      });
-      return locale;
-    }
-
-    // offline o errore: si va avanti con quello che abbiamo sul dispositivo
-    const { data, error } = esito;
-    if (error || !data) return locale;
-
-    const value = JSON.stringify(data.value);
-    await localKV.set(key, value);          // la cache si riallinea
-    return { key, value };
+/* Il database, ridotto ai cinque gesti che il motore sa fare. Le
+   condizioni di concorrenza sono tutte qui dentro, in una riga:
+   `.eq('rev', rev)` è quello che impedisce a una scrittura di passare
+   sopra a una che non ha mai visto. */
+const remoto = {
+  async utente() {
+    // getSession legge la sessione già in memoria: non è una chiamata di rete
+    const { data } = await supabase.auth.getSession();
+    return data?.session?.user?.id || null;
   },
-
-  async set(key, value) {
-    await localKV.set(key, value);          // prima il locale: l'app non aspetta la rete
-    const uid = await utenteCorrente();
-    if (!uid) return { key, value };
-
-    // Anche la scrittura ha una scadenza: se la rete resta appesa senza mai
-    // rispondere né fallire, la chiave finisce in coda e viene ritentata.
-    // Prima restava in un limbo — né scritta né in coda — e si perdeva.
-    const esito = await conScadenza(promessaVera(supabase
-      .from('user_kv')
-      .upsert({ user_id: uid, key, value: JSON.parse(value) }, { onConflict: 'user_id,key' })));
-
-    if (esito === SCADUTA || esito.error) accodaERitenta(key, value);
-    else inCoda.delete(key);
-    return { key, value };
-  },
-
-  async delete(key) {
-    await localKV.delete(key);
-    const uid = await utenteCorrente();
-    if (!uid) return { key, deleted: true };
-
-    const esito = await conScadenza(promessaVera(
-      supabase.from('user_kv').delete().eq('user_id', uid).eq('key', key),
-    ));
-    if (esito === SCADUTA || esito.error) accodaERitenta(key, null);
-    return { key, deleted: true };
-  },
-
-  async list(prefix = '') {
-    const locali = (await localKV.list(prefix)).keys;
-    const uid = await utenteCorrente();
-    if (!uid) return { keys: locali, prefix };
-
-    const esito = await conScadenza(promessaVera(supabase
-      .from('user_kv')
-      .select('key')
-      .eq('user_id', uid)
-      .like('key', `${prefix}%`)));
-    if (esito === SCADUTA || esito.error || !esito.data) return { keys: locali, prefix };
-
-    return { keys: [...new Set([...locali, ...esito.data.map((r) => r.key)])], prefix };
-  },
+  leggi: (uid, key) => supabase
+    .from('user_kv').select('value, rev')
+    .eq('user_id', uid).eq('key', key).maybeSingle(),
+  aggiorna: (uid, key, valore, rev) => supabase
+    .from('user_kv').update({ value: valore, rev: rev + 1 })
+    .eq('user_id', uid).eq('key', key).eq('rev', rev)
+    .select('rev'),
+  inserisci: (uid, key, valore) => supabase
+    .from('user_kv').insert({ user_id: uid, key, value: valore, rev: 1 })
+    .select('rev'),
+  cancella: (uid, key) => supabase
+    .from('user_kv').delete().eq('user_id', uid).eq('key', key),
+  elenca: (uid, prefix) => supabase
+    .from('user_kv').select('key').eq('user_id', uid).like('key', `${prefix}%`),
 };
 
-window.storage = supabaseConfigurato ? cloudKV : localKV;
+const cloudKV = supabaseConfigurato
+  ? creaKvSincronizzato({ locale: localKV, remoto, fondi: fondiValore })
+  : null;
+
+/* ------------------------------------------------------------------ */
+/*  GLI AGGANCI DEL BROWSER                                            */
+/* ------------------------------------------------------------------ */
+if (supabaseConfigurato) {
+  cloudKV.caricaCoda();
+
+  window.addEventListener?.('online', () => { cloudKV.svuotaCoda(); });
+
+  // appena si entra in un account si prova a consegnare il sospeso
+  supabase.auth.onAuthStateChange((_evento, sessione) => {
+    if (sessione) cloudKV.svuotaCoda();
+  });
+
+  /* Anche al ritorno in primo piano: su mobile il sistema sospende i
+     timer, e l'evento `online` non arriva se la rete non è mai andata
+     via davvero — è cambiata la scheda, non la rete. */
+  if (typeof document !== 'undefined') {
+    document.addEventListener?.('visibilitychange', () => {
+      if (document.visibilityState === 'visible') cloudKV.svuotaCoda();
+    });
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  L'ALTRA SCHEDA                                                     */
+/*                                                                     */
+/*  Due schede dello stesso account condividono localStorage: quello    */
+/*  che scrive l'una, l'altra non lo sa, e continua a costruire i suoi  */
+/*  salvataggi sopra uno stato vecchio. Il database le ricuce grazie    */
+/*  alla revisione, ma solo alla scrittura successiva, e nel frattempo  */
+/*  l'utente vede due conteggi diversi e non sa a quale credere.        */
+/*  Qui la scheda si accorge e avvisa chi vuole saperlo.                */
+/* ------------------------------------------------------------------ */
+const localeSolo = {
+  get: (k) => localKV.get(k),
+  set: (k, v) => localKV.set(k, v),
+  delete: (k) => localKV.delete(k),
+  list: (p) => localKV.list(p),
+  onCambioEsterno: () => () => {},
+  inSospeso: () => 0,
+};
+
+const scelto = cloudKV || localeSolo;
+
+if (typeof window !== 'undefined' && window.addEventListener) {
+  const ascoltatoriLocali = new Set();
+  if (!cloudKV) {
+    localeSolo.onCambioEsterno = (fn) => {
+      ascoltatoriLocali.add(fn);
+      return () => ascoltatoriLocali.delete(fn);
+    };
+  }
+  window.addEventListener('storage', (e) => {
+    if (!e?.key || !e.key.startsWith('smetto:kv:')) return;
+    const chiave = e.key.slice('smetto:kv:'.length);
+    if (chiave === '__coda__') return;
+    if (cloudKV) cloudKV.avvisa(chiave);
+    else ascoltatoriLocali.forEach((fn) => { try { fn(chiave); } catch { /* */ } });
+  });
+}
+
+window.storage = scelto;
 
 export default window.storage;

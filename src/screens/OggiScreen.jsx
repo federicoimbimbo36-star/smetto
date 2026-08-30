@@ -1,5 +1,5 @@
 import { Check, X, Plus, Sparkles, Undo2, ListPlus } from 'lucide-react';
-import { DAY, TRIGGER, FRASI } from '../constants';
+import { DAY, TRIGGER, FRASI, ORE_TOLLERANZA } from '../constants';
 import { eur, eur0, durata, ora } from '../utils/format';
 import { Pianta, FaseStop, Motto } from '../components';
 
@@ -106,14 +106,19 @@ export default function OggiScreen({
       {/* ---- due sole cifre, il resto sta nel Percorso ---- */}
       {conti && (
         <button
-          className={`oggi-cifre ${conti.inRosso ? 'oggi-cifre-spente' : ''}`}
+          className={`oggi-cifre ${conti.inRosso && !conti.inPari ? 'oggi-cifre-spente' : ''}`}
           onClick={onVaiAlPercorso}
           aria-label="Vedi tutte le statistiche nel Percorso"
         >
           <span className="oggi-cifra">
             <span className="oggi-cifra-val num">{evitate}</span>
+            {/* `inPari` prima di `inRosso`: con uno scarto di −0,2 sigarette
+                la cifra è 0 e l'etichetta diceva comunque «sopra il tuo
+                ritmo», che accanto a uno zero non vuol dire niente. */}
             <span className="oggi-cifra-lab">
-              {conti.inRosso ? 'sigarette sopra il tuo ritmo' : 'sigarette non fumate'}
+              {conti.inPari
+                ? 'sigarette: sei in pari'
+                : conti.inRosso ? 'sigarette sopra il tuo ritmo' : 'sigarette non fumate'}
             </span>
           </span>
           {/* Mai un meno davanti alla parola «risparmiati»: sono due numeri
@@ -123,7 +128,10 @@ export default function OggiScreen({
             <span className="oggi-cifra-val num">
               {eur(conti.inRosso ? conti.spesoInPiu : conti.risparmiato)}
             </span>
-            <span className="oggi-cifra-lab">{conti.inRosso ? 'spesi in più' : 'risparmiati'}</span>
+            <span className="oggi-cifra-lab">
+              {conti.inPari ? 'né risparmiati né spesi in più'
+                : conti.inRosso ? 'spesi in più' : 'risparmiati'}
+            </span>
           </span>
         </button>
       )}
@@ -237,7 +245,7 @@ export default function OggiScreen({
                 I conti sono in pausa
               </span>
               <span className="banner-testo" style={{ display: 'block' }}>
-                Sono passate più di 48 ore dall&apos;ultima cosa che mi hai detto, e senza sapere
+                Sono passate più di {ORE_TOLLERANZA} ore dall&apos;ultima cosa che mi hai detto, e senza sapere
                 com&apos;è andata non posso contare quei giorni come risparmio. Segna una sigaretta,
                 oppure conferma che sei a zero, e riparte tutto da lì.
               </span>

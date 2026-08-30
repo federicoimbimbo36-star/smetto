@@ -16,9 +16,12 @@ import { finestre, distribuisci, tappeDaRiavviare } from '../src/utils/arretrate
 import {
   calcolaConti, calcolaBaseline, intervalliCoperti, tempoCoperto, copertoAdesso,
   riferimentoAstinenza, giorniSenzaFumare, giorniZeroCoperti, eRicaduta,
+  ricadutaArretrate, giorniPercorso, recordSenzaFumare, mediaCoperta,
 } from '../src/utils/conti.js';
 import { PREFISSI } from '../src/data/prefissi.js';
-import { DAY, SOGLIA_RICADUTA, TOLLERANZA_COPERTURA } from '../src/constants.js';
+import {
+  DAY, SOGLIA_RICADUTA, TOLLERANZA_COPERTURA, ORE_TOLLERANZA, MINUTI_PER_SIGARETTA,
+} from '../src/constants.js';
 
 let passati = 0;
 const falliti = [];
@@ -1031,6 +1034,569 @@ for (const [nome, dati] of scenari) {
     eq(`Fusi · attorno al cambio d'ora del ${new Date(c2).getDate()}/${new Date(c2).getMonth() + 1} le sette chiavi restano distinte`,
       new Set(chiavi).size, 7);
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* 22. Terza tornata — quello che era ancora rotto dopo l'audit          */
+/* ------------------------------------------------------------------ */
+/* L'audit precedente aveva sistemato il modello. Questi controlli nascono
+   da una rilettura fatta apposta per smontarlo: sono i punti in cui la
+   specifica scritta e il codice non dicevano ancora la stessa cosa. */
+
+/* --- maxTs deve ignorare quello che non è un numero ---------------- */
+/* Il registro arriva da fuori — storage, e un domani un backup JSON
+   reimportato. Con una stringa in mezzo il confronto `'x' > 12345` è falso
+   in tutti e due i versi, quindi maxTs poteva restituire LA STRINGA; da lì
+   `Math.max(ultima, certificato)` faceva NaN e il riferimento
+   dell'astinenza — la fonte del numero grande della Home — spariva senza
+   nessun errore visibile. */
+eq('maxTs · una stringa in mezzo non diventa il massimo', maxTs(['x', 100, 50]), 100);
+eq('maxTs · null e NaN vengono saltati', maxTs([null, NaN, 7, undefined]), 7);
+eq('maxTs · una lista di sola spazzatura torna null', maxTs(['a', null, NaN]), null);
+ok('maxTs · torna sempre un numero o null',
+  [['x', 1], [1, 'x'], ['x'], [], [3, 2]].every((l) => {
+    const v = maxTs(l);
+    return v === null || Number.isFinite(v);
+  }));
+
+/* --- il riferimento non può diventare NaN -------------------------- */
+{
+  const sporco = {
+    start: new Date(2026, 6, 1, 9).getTime(),
+    cigs: ['x', null, new Date(2026, 7, 9, 10).getTime(), NaN],
+    resists: [], checkins: [], smessoDal: null,
+  };
+  const r = riferimentoAstinenza(sporco, ORA_SC, intervalliCoperti(sporco));
+  ok('Riferimento · con un registro sporco resta un numero',
+    r === null || Number.isFinite(r), `ottenuto ${r}`);
+  const g = giorniSenzaFumare(r, ORA_SC);
+  ok('Giorni senza fumare · con un registro sporco non escono NaN',
+    g === null || Number.isInteger(g), `ottenuto ${g}`);
+}
+
+/* --- giorniZeroCoperti non deve esplodere -------------------------- */
+/* `mese` passa `dati` così com'è, e `dati.cigs` può mancare: bastava una
+   chiave assente per far saltare l'intera schermata dei Numeri con un
+   TypeError. Verificato: prima di questa correzione qui usciva
+   «Cannot read properties of undefined (reading 'some')». */
+{
+  const conCigs = {
+    start: new Date(2026, 6, 1, 9).getTime(),
+    cigs: [new Date(2026, 6, 1, 10).getTime()],
+    resists: [], checkins: [], smessoDal: new Date(2026, 6, 1, 9).getTime(),
+  };
+  const ints = intervalliCoperti(conCigs);
+  let esploso = false;
+  let valore = null;
+  try {
+    valore = giorniZeroCoperti({ start: conCigs.start, smessoDal: conCigs.smessoDal }, ORA_SC, ints);
+  } catch { esploso = true; }
+  ok('Giorni a zero · senza la lista delle sigarette non esplode', !esploso);
+  ok('Giorni a zero · e restituisce comunque un intero', Number.isInteger(valore), `ottenuto ${valore}`);
+}
+
+/* --- nessun conto principale può produrre NaN o Infinity ----------- */
+/* Il ritmo e il prezzo unitario sono i due moltiplicatori da cui passa
+   TUTTO: basta uno dei due non finito perché ogni cifra della schermata
+   diventi «NaN €», che è peggio di una schermata vuota. Meglio non
+   mostrare niente e dirlo. */
+{
+  const buono = {
+    unit: 0.3, minPer: 20, baseline: 20, baselinePronta: true, baselineDichiarata: true,
+    startTs: DT(7, 1, 9), oggiTs: sod(ORA_SC), inizioSett: sod(ORA_SC),
+    mediaOra: 10, intervalli: [[DT(7, 1, 9), Infinity]],
+    totCigs: 100, oggiFumate: 2, settFumate: 20,
+    curvaGiorni: [], inizioCurva: sod(ORA_SC), totPrimaCurva: 0,
+  };
+  eq('Conti · con un ritmo non finito non si calcola niente',
+    calcolaConti({ ...buono, baseline: Infinity }, ORA_SC), null);
+  eq('Conti · con un ritmo NaN non si calcola niente',
+    calcolaConti({ ...buono, baseline: NaN }, ORA_SC), null);
+  eq('Conti · con un prezzo unitario non finito non si calcola niente',
+    calcolaConti({ ...buono, unit: NaN }, ORA_SC), null);
+  const conMediaRotta = calcolaConti({ ...buono, mediaOra: NaN }, ORA_SC);
+  /* `eq` qui non basta: passa da JSON.stringify, che trasforma NaN in
+     `null` e farebbe passare il controllo proprio nel caso che deve
+     bocciare. Il confronto va fatto sul valore. */
+  ok('Conti · una media rotta non produce una proiezione NaN',
+    conMediaRotta.risparmioAnno === null, `ottenuto ${conMediaRotta.risparmioAnno}`);
+  ok('Conti · e nemmeno un costo annuo NaN',
+    conMediaRotta.minutiAnnoRitmo === null, `ottenuto ${conMediaRotta.minutiAnnoRitmo}`);
+  ok('Conti · e nemmeno una vita annua NaN',
+    conMediaRotta.vitaAnno === null, `ottenuto ${conMediaRotta.vitaAnno}`);
+  const c22 = calcolaConti(buono, ORA_SC);
+  ok('Conti · nessun valore mostrato è NaN o Infinity',
+    Object.entries(c22).every(([, v]) => typeof v !== 'number' || Number.isFinite(v)));
+}
+
+/* --- le arretrate durante un'astinenza dichiarata SONO una ricaduta - */
+/* La regola dice che durante un'astinenza dichiarata qualsiasi sigaretta
+   registrata è una ricaduta. Le arretrate non facevano eccezione a parole
+   ma la facevano nei fatti: il contatore dei giorni ripartiva da solo — è
+   il riferimento a spostarsi — mentre `ripartenze` restava fermo. Due
+   numeri che raccontavano due storie sugli stessi dati. */
+{
+  const dich = DT(8, 1, 9);
+  const pulito = { start: DT(7, 1, 9), cigs: [DT(7, 30, 20)], smessoDal: dich };
+  ok('Arretrate · una sigaretta datata dopo la dichiarazione è una ricaduta',
+    ricadutaArretrate(pulito, [DT(8, 5, 15)]) === true);
+  ok('Arretrate · una datata PRIMA della dichiarazione non lo è',
+    ricadutaArretrate(pulito, [DT(7, 28, 15)]) === false);
+  ok('Arretrate · in fase di riduzione non contano mai come ricaduta',
+    ricadutaArretrate({ ...pulito, smessoDal: null }, [DT(8, 5, 15)]) === false);
+  ok('Arretrate · se la ricaduta era già registrata non se ne conta una seconda',
+    ricadutaArretrate({ ...pulito, cigs: [DT(8, 4, 20)] }, [DT(8, 5, 15)]) === false);
+  ok('Arretrate · mettere in ordine il registro dopo una pausa lunga non è una ripartenza',
+    ricadutaArretrate({ start: DT(7, 1, 9), cigs: [DT(7, 1, 10)], smessoDal: null },
+      [DT(8, 5, 15)]) === false);
+}
+
+/* --- la soglia della ricaduta ha un solo valore di default --------- */
+ok('Ricaduta · la soglia di default è la costante, non un numero scritto a mano',
+  eRicaduta({ cigs: [ORA_SC - SOGLIA_RICADUTA] }, ORA_SC)
+  === eRicaduta({ cigs: [ORA_SC - SOGLIA_RICADUTA] }, ORA_SC, SOGLIA_RICADUTA));
+
+/* --- la tolleranza dichiarata a schermo è quella vera -------------- */
+/* «Sono passate più di 48 ore» era scritto a mano in due schermate: la
+   costante si poteva cambiare in un secondo e l'interfaccia avrebbe
+   continuato a dire 48, cioè avrebbe mentito senza che nessun test se ne
+   accorgesse. */
+eq('Tolleranza · le ore mostrate a schermo nascono dalla costante',
+  ORE_TOLLERANZA, TOLLERANZA_COPERTURA / 3600000);
+ok('Tolleranza · e sono un numero intero di ore, che si può scrivere in una frase',
+  Number.isInteger(ORE_TOLLERANZA));
+
+/* --- i giorni di percorso non tornano mai indietro ----------------- */
+/* Stavano scritti a mano dentro App.jsx: adesso sono una funzione pura, e
+   l'invariante «non diminuiscono dopo una ricaduta» si può verificare. */
+{
+  const startGp = DT(7, 1, 9);
+  eq('Percorso · senza inizio i giorni sono zero', giorniPercorso({ start: null }, ORA_SC), 0);
+  eq('Percorso · con un inizio corrotto i giorni sono zero',
+    giorniPercorso({ start: NaN }, ORA_SC), 0);
+  eq('Percorso · dal 1° luglio all\'11 agosto sono 41 giorni',
+    giorniPercorso({ start: startGp }, ORA_SC), 41);
+  const primaDellaRicaduta = giorniPercorso({ start: startGp }, DT(8, 4, 19));
+  const dopoLaRicaduta = giorniPercorso({ start: startGp }, DT(8, 4, 21));
+  ok('Percorso · una ricaduta non li fa scendere', dopoLaRicaduta >= primaDellaRicaduta);
+  let cala = false;
+  for (let g = 0; g < 400; g += 1) {
+    const a = giorniPercorso({ start: startGp }, addGiorni(startGp, g) + 12 * 3600000);
+    const b = giorniPercorso({ start: startGp }, addGiorni(startGp, g + 1) + 3 * 3600000);
+    if (b < a) cala = true;
+  }
+  ok('Percorso · su 400 giorni consecutivi non scendono mai', !cala);
+}
+
+/* --- il record e la Home devono dire la stessa cosa ---------------- */
+/* Scenario E: chi dichiara di aver smesso senza aver mai registrato una
+   sigaretta. Il record leggeva `dati.cigs.length` e usciva un trattino,
+   mentre due centimetri sopra la Home diceva «10 giorni senza fumare».
+   Qui si verifica la grandezza che le alimenta entrambe. */
+{
+  const maiFumato = {
+    start: DT(8, 1, 9), cigs: [], resists: [], checkins: [], smessoDal: DT(8, 1, 9),
+  };
+  const rifE = riferimentoAstinenza(maiFumato, ORA_SC, intervalliCoperti(maiFumato));
+  ok('Record · chi non ha mai registrato una sigaretta ha comunque una pausa in corso',
+    rifE !== null && Math.max(0, ORA_SC - rifE) > 9 * DAY,
+    `rif ${rifE}`);
+  eq('Record · e vale esattamente quello che dice il numero grande della Home',
+    giorniSenzaFumare(rifE, ORA_SC), 10);
+}
+
+/* --- il mese deve saper dire anche il caso brutto ------------------ */
+/* Il valore era passato per un `Math.max(0, …)`, quindi la frase sotto il
+   grafico compariva solo col segno positivo: chi fumava più del proprio
+   ritmo di partenza non leggeva niente. Le due card qui sopra il caso
+   brutto lo dicono; nascondere solo qui non è gentilezza, è la stessa
+   asimmetria che rende impossibile fidarsi dei numeri. */
+{
+  const sopra = {
+    start: DT(7, 1, 9),
+    cigs: sigaretteScenario(DT(7, 1), 42, 25).filter((t) => t <= ORA_SC),
+    resists: [], checkins: [], smessoDal: null, profile: PROFILO_SC,
+  };
+  const intsM = intervalliCoperti(sopra);
+  const oggiM = sod(ORA_SC);
+  const inizio30 = addGiorni(oggiM, -29);
+  const totale30 = sopra.cigs.filter((t) => t >= inizio30).length;
+  const scartoMese = 20 * tempoCoperto(intsM, Math.max(inizio30, sopra.start), ORA_SC) - totale30;
+  ok('Mese · chi sta sopra il proprio ritmo produce uno scarto negativo, non uno zero',
+    scartoMese < 0, `scarto ${scartoMese.toFixed(1)}`);
+  ok('Mese · e la cifra da mostrare è il suo valore assoluto',
+    Math.abs(Math.round(scartoMese)) > 0);
+}
+
+/* --- l'invariante vera sul tempo coperto in astinenza -------------- */
+/* La specifica diceva «uguaglianza esatta in astinenza dichiarata». È
+   falso, e va detto: la dichiarazione NON copre all'indietro, quindi un
+   buco precedente resta escluso per sempre. Quello che è sempre vero è
+   che il tratto DOPO la dichiarazione è coperto per intero. */
+{
+  const conBuco = {
+    start: DT(7, 1, 9),
+    cigs: [DT(7, 2, 10)],                       // poi trenta giorni di silenzio
+    resists: [], checkins: [], smessoDal: DT(8, 1, 9),
+  };
+  const intsB = intervalliCoperti(conBuco);
+  const contato = tempoCoperto(intsB, conBuco.start, ORA_SC);
+  const percorso = giorniFra(conBuco.start, ORA_SC);
+  ok('Astinenza · un buco PRIMA della dichiarazione resta escluso per sempre',
+    contato < percorso - 20, `contato ${contato.toFixed(2)} su ${percorso.toFixed(2)}`);
+  ok('Astinenza · ma il tratto dopo la dichiarazione è coperto per intero',
+    Math.abs(tempoCoperto(intsB, conBuco.smessoDal, ORA_SC)
+      - giorniFra(conBuco.smessoDal, ORA_SC)) < 1e-9);
+  ok('Astinenza · e il tempo contato non supera mai il tempo di percorso',
+    contato <= percorso + 1e-9);
+}
+
+/* ------------------------------------------------------------------ */
+/* 23. Il banco delle invarianti — quattromila storie diverse           */
+/* ------------------------------------------------------------------ */
+/* I controlli qui sopra sanno già dove guardare. Questo no: genera
+   registri casuali — storici da zero a 400 giorni, fino a 300 sigarette,
+   prezzi da un centesimo a mille euro, pacchetti da 10/20/25/30, ritmo
+   dichiarato o dedotto, dichiarazione di aver smesso in un istante
+   qualsiasi — e su ognuno pretende che le tredici invarianti reggano.
+   Il seme è fisso, quindi il banco è sempre lo stesso: se un giorno
+   qualcuno cambia una formula, salta fuori qui con lo scenario preciso. */
+{
+  let seme = 20260829;
+  const rnd = () => { seme = (seme * 1103515245 + 12345) % 2147483648; return seme / 2147483648; };
+  const scelta = (l) => l[Math.floor(rnd() * l.length)];
+
+  let casi = 0;
+  const rotte = [];
+  const rompi = (m) => { if (!rotte.includes(m)) rotte.push(m); };
+
+  for (let iter = 0; iter < 4000; iter += 1) {
+    const durataG = Math.floor(rnd() * 400);
+    const start = ORA_SC - durataG * DAY - Math.floor(rnd() * DAY);
+    const quante = Math.floor(rnd() * 300);
+    const grezze = [];
+    for (let i = 0; i < quante; i += 1) {
+      grezze.push(start + Math.floor(rnd() * Math.max(1, ORA_SC - start)));
+    }
+    const cigs = [...new Set(grezze)].sort((a, b) => a - b);
+    const dichiara = rnd() < 0.4;
+    const dati = {
+      start,
+      cigs,
+      resists: rnd() < 0.5 ? [start + Math.floor(rnd() * Math.max(1, ORA_SC - start))] : [],
+      checkins: rnd() < 0.5 ? [start + Math.floor(rnd() * Math.max(1, ORA_SC - start))] : [],
+      smessoDal: dichiara ? start + Math.floor(rnd() * Math.max(1, ORA_SC - start)) : null,
+      profile: {
+        prezzoPacchetto: scelta([0.01, 5, 6.5, 12.345, 1000]),
+        perPacchetto: scelta([10, 20, 25, 30]),
+        baseline: scelta([null, 0.5, 1, 12.5, 20, 60]),
+        sesso: 'non_detto',
+      },
+    };
+
+    const ints = intervalliCoperti(dati);
+    const ritmo = calcolaBaseline(dati.profile, dati.start, dati.cigs, sod(ORA_SC));
+    const oggiTs = sod(ORA_SC);
+    const giorniTot = dayDiff(dati.start, oggiTs) + 1;
+    const inizioSett = addGiorni(oggiTs, -((giorniTot - 1) % 7));
+    const giorniCurva = Math.min(14, giorniTot);
+    const inizioCurva = addGiorni(oggiTs, -(giorniCurva - 1));
+    const curvaGiorni = [];
+    for (let i = giorniCurva - 1; i >= 0; i -= 1) {
+      const g = addGiorni(oggiTs, -i);
+      const fine = addGiorni(g, 1);
+      curvaGiorni.push({ n: dati.cigs.filter((t) => t >= g && t < fine).length, da: g, a: fine, label: '' });
+    }
+    const giorniPieni = Math.min(7, dayDiff(dati.start, ORA_SC));
+    const media7 = giorniPieni === 0 ? null
+      : dati.cigs.filter((t) => t >= addGiorni(oggiTs, -giorniPieni) && t < oggiTs).length / giorniPieni;
+
+    const conti = calcolaConti({
+      unit: dati.profile.prezzoPacchetto / dati.profile.perPacchetto,
+      minPer: MINUTI_PER_SIGARETTA.non_detto,
+      baseline: ritmo.valore,
+      baselinePronta: ritmo.pronta,
+      baselineDichiarata: ritmo.dichiarata,
+      startTs: dati.start,
+      intervalli: ints,
+      oggiTs,
+      inizioSett,
+      mediaOra: media7,
+      curvaGiorni,
+      inizioCurva,
+      totPrimaCurva: dati.cigs.filter((t) => t < inizioCurva).length,
+      totCigs: dati.cigs.length,
+      oggiFumate: dati.cigs.filter((t) => t >= oggiTs).length,
+      settFumate: dati.cigs.filter((t) => t >= inizioSett).length,
+    }, ORA_SC);
+
+    if (!conti) continue;
+    casi += 1;
+
+    const numeri = Object.entries(conti)
+      .filter(([, v]) => typeof v === 'number')
+      .map(([k, v]) => [k, v])
+      .concat(conti.curva.map((punto, i) => [`curva[${i}]`, punto.v]));
+
+    // 9 e 10 — niente NaN, niente Infinity
+    numeri.forEach(([k, v]) => { if (!Number.isFinite(v)) rompi(`${k} non è finito`); });
+    // 1, 2 — i soldi non sono mai negativi
+    if (conti.risparmiato < 0) rompi('risparmiato negativo');
+    if (conti.spesoInPiu < 0) rompi('spesoInPiu negativo');
+    if (conti.risparmioOggi < 0 || conti.spesoOggi < 0) rompi('i soldi di oggi negativi');
+    if (conti.risparmioSett < 0 || conti.spesoSett < 0) rompi('i soldi della settimana negativi');
+    // 11 — nessuna vita negativa
+    if (conti.vitaTenuta < 0 || conti.vitaPersaInPiu < 0) rompi('vita negativa');
+    if (conti.minutiPersiTotali < 0) rompi('minuti persi negativi');
+    // 3 — mai entrambi maggiori di zero
+    if (conti.risparmiato > 0 && conti.spesoInPiu > 0) rompi('risparmiato e speso insieme');
+    // 4 — risparmiato − spesoInPiu = scarto × unitario
+    if (Math.abs(conti.risparmiato - conti.spesoInPiu - conti.scartoRitmo * conti.unitario) > 1e-9) {
+      rompi('risparmiato − speso ≠ scarto × unitario');
+    }
+    // la stessa identità sui minuti di vita
+    if (Math.abs(conti.vitaTenuta - conti.vitaPersaInPiu - conti.scartoRitmo * conti.minutiPer) > 1e-9) {
+      rompi('vita tenuta − vita persa ≠ scarto × minuti');
+    }
+    // 5 — 0 ≤ tempo contato ≤ tempo di percorso
+    const contato = tempoCoperto(ints, dati.start, ORA_SC);
+    const percorso = giorniFra(dati.start, ORA_SC);
+    if (contato < -1e-9) rompi('tempo contato negativo');
+    if (contato > percorso + 1e-9) rompi('tempo contato oltre il percorso');
+    // 6 — in astinenza dichiarata il tratto dopo la dichiarazione è pieno
+    if (dati.smessoDal !== null && dati.smessoDal >= dati.start) {
+      const dopo = tempoCoperto(ints, dati.smessoDal, ORA_SC);
+      if (Math.abs(dopo - giorniFra(dati.smessoDal, ORA_SC)) > 1e-9) {
+        rompi('dopo la dichiarazione resta del tempo scoperto');
+      }
+    }
+    // 8 — il tempo non coperto non torna a galla: mai più sigarette del ritmo × percorso
+    if (conti.scartoRitmo > ritmo.valore * percorso + 1e-6) rompi('scarto oltre il massimo possibile');
+    // 12 — la curva finisce sul numero grande della card
+    const ultimo = conti.curva[conti.curva.length - 1];
+    if (ultimo && Math.abs(ultimo.v - conti.scartoRitmo * conti.unitario) > 1e-6) {
+      rompi('la curva non finisce sul totale della card');
+    }
+    // 13 — nessuna sigaretta contata due volte
+    if (new Set(dati.cigs).size !== dati.cigs.length) rompi('doppioni nel registro generato');
+    // il riferimento e i giorni senza fumare restano sensati
+    const rifF = riferimentoAstinenza(dati, ORA_SC, ints);
+    const gsf = giorniSenzaFumare(rifF, ORA_SC);
+    if (gsf !== null && (!Number.isInteger(gsf) || gsf < 0)) rompi('giorni senza fumare non validi');
+    if (giorniPercorso(dati, ORA_SC) < 0) rompi('giorni di percorso negativi');
+  }
+
+  ok('Invarianti · quattromila registri casuali, nessuna violazione',
+    rotte.length === 0, rotte.join(' · '));
+  ok('Invarianti · il banco ha davvero prodotto conti da controllare',
+    casi > 2000, `casi validi ${casi}`);
+}
+
+/* ------------------------------------------------------------------ */
+/* 24. Casi limite, uno per uno                                         */
+/* ------------------------------------------------------------------ */
+{
+  const st = DT(7, 1, 9);
+  const conti24 = (over, adesso = ORA_SC) => {
+    const dati = {
+      start: st, cigs: [], resists: [], checkins: [], smessoDal: null, ...over,
+    };
+    const ints = intervalliCoperti(dati);
+    const ritmo = calcolaBaseline(dati.profile || PROFILO_SC, dati.start, dati.cigs, sod(adesso));
+    const prof = dati.profile || PROFILO_SC;
+    return calcolaConti({
+      unit: prof.prezzoPacchetto / (prof.perPacchetto || 20),
+      minPer: 20,
+      baseline: ritmo.valore,
+      baselinePronta: ritmo.pronta,
+      baselineDichiarata: ritmo.dichiarata,
+      startTs: dati.start,
+      intervalli: ints,
+      oggiTs: sod(adesso),
+      inizioSett: sod(adesso),
+      mediaOra: null,
+      curvaGiorni: [],
+      inizioCurva: sod(adesso),
+      totPrimaCurva: 0,
+      totCigs: dati.cigs.length,
+      oggiFumate: 0,
+      settFumate: 0,
+    }, adesso);
+  };
+
+  ok('Limite · zero sigarette registrate', conti24({}).risparmiato >= 0);
+  ok('Limite · una sola sigaretta', conti24({ cigs: [DT(7, 1, 10)] }).risparmiato >= 0);
+  ok('Limite · diecimila sigarette non producono valori non finiti', (() => {
+    const tante = [];
+    for (let i = 0; i < 10000; i += 1) tante.push(st + i * 60000);
+    const c24 = conti24({ cigs: tante });
+    return Number.isFinite(c24.risparmiato) && Number.isFinite(c24.spesoInPiu);
+  })());
+  ok('Limite · prezzo con i decimali non perde centesimi per strada', (() => {
+    const c24 = conti24({ profile: { ...PROFILO_SC, prezzoPacchetto: 6.5, perPacchetto: 20 } });
+    return Math.abs(c24.unitario - 0.325) < 1e-12;
+  })());
+  ok('Limite · ritmo con i decimali',
+    calcolaBaseline({ baseline: 12.5 }, st, [], ORA_SC).valore === 12.5);
+  ok('Limite · ritmo zero non è un ritmo',
+    !calcolaBaseline({ baseline: 0 }, st, [], ORA_SC).pronta);
+  ok('Limite · ritmo negativo non è un ritmo',
+    !calcolaBaseline({ baseline: -3 }, st, [], ORA_SC).pronta);
+  eq('Limite · nessuna sigaretta mai registrata, nessun riferimento',
+    riferimentoAstinenza({ start: null, cigs: [] }, ORA_SC), null);
+  eq('Limite · nessun percorso iniziato, nessun intervallo',
+    intervalliCoperti({ start: null, cigs: [1, 2, 3] }), []);
+  ok('Limite · eventi duplicati non raddoppiano la copertura', (() => {
+    const uno = intervalliCoperti({ start: st, cigs: [st + DAY], resists: [], checkins: [] });
+    const due = intervalliCoperti({
+      start: st, cigs: [st + DAY, st + DAY], resists: [], checkins: [],
+    });
+    return tempoCoperto(uno, st, ORA_SC) === tempoCoperto(due, st, ORA_SC);
+  })());
+
+  /* Mezzanotte, fine e inizio mese, cambio anno, anno bisestile: il conto
+     dei giorni non deve saltare né ripetersi in nessuno di questi punti. */
+  const passaggi = [
+    ['mezzanotte', new Date(2026, 5, 10, 23, 59, 59).getTime()],
+    ['fine mese', new Date(2026, 0, 31, 23, 30).getTime()],
+    ['inizio mese', new Date(2026, 1, 1, 0, 30).getTime()],
+    ['cambio anno', new Date(2026, 11, 31, 23, 30).getTime()],
+    ['anno bisestile', new Date(2024, 1, 28, 23, 30).getTime()],
+    ['ora legale', new Date(2026, 2, 29, 1, 30).getTime()],
+  ];
+  passaggi.forEach(([nome, ts]) => {
+    eq(`Limite · ${nome}: un giorno dopo è esattamente un giorno`,
+      dayDiff(ts, addGiorni(ts, 1) + 12 * 3600000), 1);
+    ok(`Limite · ${nome}: la chiave di giornata non si ripete`,
+      ymd(ts) !== ymd(addGiorni(ts, 1)));
+  });
+  eq('Limite · il 29 febbraio 2024 esiste e viene dopo il 28',
+    dayDiff(new Date(2024, 1, 28, 12).getTime(), new Date(2024, 1, 29, 12).getTime()), 1);
+  eq('Limite · dal 28 febbraio 2026 (non bisestile) si passa al 1° marzo',
+    ymd(addGiorni(new Date(2026, 1, 28, 12).getTime(), 1)), '2026-03-01');
+
+  /* Giornata appena iniziata: alle 00:01 del primo giorno il conto non
+     deve regalare né togliere niente di rilevante. */
+  {
+    const appenaIniziato = new Date(2026, 5, 10, 0, 1).getTime();
+    const c24 = conti24({ start: appenaIniziato, profile: PROFILO_SC }, appenaIniziato + 60000);
+    ok('Limite · giornata appena iniziata: il risparmio è quasi zero',
+      Math.abs(c24.scartoRitmo) < 0.1, `scarto ${c24.scartoRitmo}`);
+  }
+
+  /* Seconda dichiarazione e annullamento: il percorso non si azzera mai. */
+  {
+    const conStoria = {
+      start: DT(7, 1, 9), cigs: [DT(8, 4, 20)], resists: [], checkins: [],
+      smessoDal: DT(8, 1, 9),
+    };
+    eq('Limite · annullando la dichiarazione i giorni di percorso restano',
+      giorniPercorso({ ...conStoria, smessoDal: null }, ORA_SC),
+      giorniPercorso(conStoria, ORA_SC));
+    ok('Limite · e il tempo coperto senza dichiarazione non è mai maggiore',
+      tempoCoperto(intervalliCoperti({ ...conStoria, smessoDal: null }), DT(7, 1, 9), ORA_SC)
+      <= tempoCoperto(intervalliCoperti(conStoria), DT(7, 1, 9), ORA_SC) + 1e-9);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 25. «Assenza di dati ≠ zero» anche nelle statistiche secondarie      */
+/* ------------------------------------------------------------------ */
+/* Il principio valeva per i soldi e per i giorni a zero. Il record e le
+   medie no: scorrevano i dati come se ogni giorno senza registrazioni
+   fosse un giorno a zero sigarette. Sono le stesse ore che i contatori
+   si rifiutano di pagare. */
+
+/* --- IL RECORD (D12) ---------------------------------------------- */
+{
+  const st25 = DT(7, 1, 9);
+  /* Dieci giorni di silenzio fra due sigarette: prima diventavano un
+     record di dieci giorni senza fumare. E un record resta scritto,
+     diventa il numero da battere, e sta accanto alla scritta «il tuo
+     record senza fumare» come se qualcuno l'avesse verificato. */
+  const conBuco25 = {
+    start: st25, cigs: [DT(7, 5, 10), DT(7, 15, 10), DT(8, 10, 9)],
+    resists: [], checkins: [], smessoDal: null, profile: PROFILO_SC,
+  };
+  const ints25 = intervalliCoperti(conBuco25);
+  const rec = recordSenzaFumare(conBuco25, ORA_SC, ints25);
+  ok('Record · dieci giorni di silenzio non sono un record di dieci giorni',
+    rec < 3 * DAY, `record ${(rec / DAY).toFixed(2)} giorni`);
+
+  /* Ma chi quei giorni li ha certificati se li tiene tutti: la pausa è
+     dentro un tratto coperto perché in mezzo ci sono i check-in. */
+  const conConferme25 = {
+    ...conBuco25,
+    checkins: [DT(7, 6, 12), DT(7, 8, 12), DT(7, 10, 12), DT(7, 12, 12), DT(7, 14, 12)],
+  };
+  const rec2 = recordSenzaFumare(conConferme25, ORA_SC, intervalliCoperti(conConferme25));
+  ok('Record · gli stessi dieci giorni, se confermati, contano tutti',
+    rec2 >= 9.9 * DAY, `record ${(rec2 / DAY).toFixed(2)} giorni`);
+
+  /* La pausa IN CORSO vale sempre, perché si misura dal riferimento, che
+     è già prudente per costruzione (D4). */
+  const maiFumato25 = {
+    start: DT(8, 1, 9), cigs: [], resists: [], checkins: [], smessoDal: DT(8, 1, 9),
+  };
+  const rec3 = recordSenzaFumare(maiFumato25, ORA_SC, intervalliCoperti(maiFumato25));
+  ok('Record · chi non ha mai registrato niente ha comunque la pausa in corso',
+    rec3 >= 9.9 * DAY, `record ${(rec3 / DAY).toFixed(2)} giorni`);
+
+  eq('Record · senza percorso non c\'è record',
+    recordSenzaFumare({ start: null, cigs: [] }, ORA_SC, []), null);
+  ok('Record · non è mai negativo, nemmeno con l\'orologio spostato indietro',
+    recordSenzaFumare({
+      start: st25, cigs: [ORA_SC + 5 * DAY], resists: [], checkins: [], smessoDal: null,
+    }, ORA_SC) >= 0);
+
+  /* Il record non può essere più lungo del percorso. */
+  ok('Record · non supera mai i giorni di percorso',
+    recordSenzaFumare(conConferme25, ORA_SC, intervalliCoperti(conConferme25))
+    <= ORA_SC - conConferme25.start + 1);
+}
+
+/* --- LE MEDIE, SUI SOLI GIORNI COPERTI ---------------------------- */
+{
+  const oggi25 = sod(ORA_SC);
+  const setteFa = addGiorni(oggi25, -7);
+  /* Sette giorni, ma l'app sa qualcosa solo dei primi quattro: dividere
+     per sette conta come «zero sigarette» i tre giorni di silenzio, e da
+     `media7` esce la proiezione a un anno. */
+  const cigs25 = [];
+  for (let g = 0; g < 4; g += 1) {
+    for (let i = 0; i < 10; i += 1) cigs25.push(addGiorni(setteFa, g) + (8 + i) * 3600000);
+  }
+  const dati25 = {
+    start: setteFa, cigs: cigs25, resists: [], checkins: [], smessoDal: null,
+  };
+  const ints = intervalliCoperti(dati25);
+  const coperta = mediaCoperta(cigs25, ints, setteFa, oggi25);
+  const suSette = cigs25.length / 7;
+  /* Il denominatore è il tempo davvero coperto, che comprende anche le
+     48 ore di tolleranza dopo l'ultima sigaretta: non torna «10 al
+     giorno» tondo, e non deve — la tolleranza è tempo certificato a
+     tutti gli effetti, esattamente come nei soldi. Quello che conta è
+     che il silenzio NON entri nel denominatore. */
+  const copertiVeri = tempoCoperto(ints, setteFa, oggi25);
+  ok('Media · il denominatore è il tempo coperto, non i giorni di calendario',
+    Math.abs(coperta - cigs25.length / copertiVeri) < 1e-9,
+    `coperta ${coperta.toFixed(3)}`);
+  ok('Media · il silenzio non entra nel denominatore, quindi la media sale',
+    coperta > suSette + 1, `coperta ${coperta.toFixed(2)}, sui sette giorni ${suSette.toFixed(2)}`);
+  ok('Media · e resta sotto il ritmo vero dei giorni fumati, perché la tolleranza è coperta',
+    coperta < 10.01, `coperta ${coperta.toFixed(2)}`);
+
+  eq('Media · un periodo quasi del tutto scoperto non produce una media',
+    mediaCoperta(cigs25, [[setteFa, setteFa + 3600000]], setteFa, oggi25), null);
+  eq('Media · e nemmeno un periodo senza copertura', mediaCoperta(cigs25, [], setteFa, oggi25), null);
+
+  /* La proiezione annuale che ne discende non può più essere gonfiata
+     dal silenzio: con la media giusta il risparmio annunciato scende. */
+  const unit25 = 6 / 20;
+  const gonfiata = (20 - suSette) * 365 * unit25;
+  const vera = (20 - coperta) * 365 * unit25;
+  ok('Media · il silenzio non gonfia più il risparmio annunciato per l\'anno',
+    gonfiata - vera > 100, `prima ${gonfiata.toFixed(0)} €, adesso ${vera.toFixed(0)} €`);
 }
 
 /* ------------------------------------------------------------------ */

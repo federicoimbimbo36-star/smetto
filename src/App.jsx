@@ -7,12 +7,17 @@ import {
   sod, dayDiff, ora, ymd, dataBreve, prossimaMedia,
   addGiorni, maxTs, daYmd, durata, componiTelefono, cifreLocali,
 } from './utils/format';
-import { readStore, writeStore } from './utils/storage';
+import { readStore, writeStore, onCambioEsterno } from './utils/storage';
+import {
+  normalizzaRegistro, fondiRegistri, timbra, rimuoviIstante, seppellisciTutto,
+} from './utils/fusione';
 import auth from './auth';
 import { distribuisci, tappeDaRiavviare } from './utils/arretrate';
 import {
   calcolaConti, calcolaBaseline, intervalliCoperti, tempoCoperto,
   riferimentoAstinenza, giorniSenzaFumare, giorniZeroCoperti, eRicaduta,
+  ricadutaArretrate, giorniPercorso as calcolaGiorniPercorso,
+  recordSenzaFumare, mediaCoperta,
 } from './utils/conti';
 import { PREFISSO_DEFAULT } from './data/prefissi';
 import groups from './data/groups';
@@ -32,10 +37,20 @@ import './styles.css';
    ricreare l'array e il "vuoto" smette di essere vuoto per sempre, anche
    dopo un logout. Con la funzione ogni chiamata ha i suoi. */
 const vuotoLog = () => ({
-  v: 7, start: null, smessoDal: null, cigs: [], resists: [], tags: {}, checkins: [],
+  v: 8, start: null, smessoDal: null, cigs: [], resists: [], tags: {}, checkins: [],
   groups: [], notify: true, avvisiCorpo: true, onboarded: false,
   profile: { motivo: '', baseline: null, prezzoPacchetto: null, perPacchetto: 20, sesso: 'non_detto' },
-  plans: {}, tappeViste: { ref: null, idx: [] }, ripartenze: 0,
+  plans: {}, tappeViste: { ref: null, idx: [] },
+  /* LE RICADUTE SONO UN INSIEME DI ISTANTI, non più un contatore.
+     Un contatore scalare non si fonde: due dispositivi che salgono da 3
+     a 4 ciascuno, riconciliati con «vince il più recente», danno 4 e non
+     5. Un insieme di istanti si fonde con l'unione, come le sigarette.
+     `ripartenzeBase` porta avanti il contatore delle versioni
+     precedenti senza inventare istanti che nessuno ha registrato, e il
+     numero mostrato è la somma dei due. */
+  ricadute: [], ripartenzeBase: 0, ripartenze: 0,
+  rimossi: { cigs: [], resists: [], checkins: [], ricadute: [] },
+  orologi: {},
 });
 const UTENTE_VUOTO = {
   id: null, name: 'Tu', nickname: '', email: '', emailVerified: false,
@@ -129,22 +144,16 @@ export default function App() {
      della distribuzione delle arretrate: due sigarette non possono
      condividere lo stesso millisecondo, perché su quel millisecondo sono
      indicizzate le etichette del registro. */
-  const soloIstanti = (lista) => [...new Set(
-    (Array.isArray(lista) ? lista : []).filter((t) => Number.isFinite(t) && t > 0),
-  )].sort((a, b) => a - b);
-
   async function loadLog(uid) {
-    const base = vuotoLog();
-    const d = await readStore(logKey(uid), base);
-    const merged = { ...base, ...d, profile: { ...base.profile, ...(d.profile || {}) } };
-    merged.cigs = soloIstanti(merged.cigs);
-    merged.resists = soloIstanti(merged.resists);
-    merged.checkins = soloIstanti(merged.checkins);
-    if (!Number.isFinite(merged.start) || merged.start <= 0) merged.start = merged.cigs[0] ?? null;
-    if (!Number.isFinite(merged.smessoDal) || merged.smessoDal <= 0) merged.smessoDal = null;
+    const d = await readStore(logKey(uid), vuotoLog());
+    /* Una funzione sola, e sta in utils/fusione.js: la ripulitura del
+       registro serviva già qui, ma adesso serve anche allo strato di
+       storage quando fonde la copia locale con quella del database, e
+       due versioni della stessa normalizzazione sono due modi diversi di
+       contare le stesse sigarette. */
+    const merged = normalizzaRegistro(d, vuotoLog);
     // migrazione dalle versioni con un gruppo solo
-    if (!merged.groups?.length && d.group) merged.groups = [d.group];
-    delete merged.group;
+    if (!merged.groups?.length && d?.group) merged.groups = [d.group];
     visti.current = await readStore(seenKey(uid), {});
 
     // I gruppi arrivano dal database, non dalla lista salvata sul dispositivo:
@@ -160,6 +169,14 @@ export default function App() {
       setGruppi(caricati);
       setGruppoAttivo((prev) => (vivi.includes(prev) ? prev : vivi[0] || null));
     }
+    /* `datiRef` PRIMA di `setDati`: il riferimento è quello che `salva()`
+       legge come «com'era prima» per timbrare i campi cambiati, e lo
+       useEffect che lo allinea gira solo dopo il render. Una modifica
+       fatta nell'istante fra i due — l'effetto delle tappe del corpo lo
+       fa davvero — avrebbe timbrato tutto il registro invece dei soli
+       campi toccati, cioè un orologio unico al posto di quelli per
+       campo, cioè il bug che gli orologi per campo risolvono. */
+    datiRef.current = merged;
     setDati(merged);
 
     // riallinea le notifiche native all'apertura app: se il sistema le aveva
@@ -207,16 +224,59 @@ export default function App() {
   useEffect(() => { setNicknameDraft(user.nickname || ''); }, [user.nickname]);
   useEffect(() => { datiRef.current = dati; }, [dati]);
 
+  /* ------------------------------------------------------------------ */
+  /*  L'ALTRA SCHEDA                                                     */
+  /*                                                                     */
+  /*  Due schede dello stesso account sono due dispositivi che per        */
+  /*  giunta condividono la copia locale. Senza questo effetto, la        */
+  /*  scheda B continuava a costruire i propri salvataggi sopra lo stato  */
+  /*  che aveva in memoria — quello di prima che A registrasse — e ogni   */
+  /*  suo salvataggio ripartiva da lì. Il database ricuce comunque        */
+  /*  grazie alla fusione, ma l'utente nel frattempo vede due conteggi    */
+  /*  diversi nelle due schede e non sa a quale credere.                  */
+  /*                                                                     */
+  /*  Qui la scheda si accorge della scrittura dell'altra e RIFONDE: non  */
+  /*  ricarica e basta, perché ricaricare vorrebbe dire buttare via       */
+  /*  quello che ha in memoria e che magari l'altra non ha ancora visto.  */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    if (!user.id) return undefined;
+    const mia = logKey(user.id);
+    return onCambioEsterno(async (chiave) => {
+      if (chiave !== mia || !datiRef.current) return;
+      const daFuori = await readStore(mia, null);
+      if (!daFuori) return;
+      const fuso = fondiRegistri(datiRef.current, daFuori, vuotoLog);
+      if (JSON.stringify(fuso) === JSON.stringify(datiRef.current)) return;
+      datiRef.current = fuso;
+      setDati(fuso);
+    });
+  }, [user.id]);
+
   /* `pubblica` esiste perché non tutto quello che si salva riguarda il gruppo.
      Il prezzo del pacchetto, il motivo, i se–allora sono roba privata: prima
      ogni carattere digitato in quei campi faceva partire anche un upsert su
      group_members, cioè traffico e scritture per dati che il gruppo non vede
      nemmeno. Le sigarette invece vanno pubblicate subito. */
+  /* OGNI MODIFICA TIMBRA I CAMPI CHE HA TOCCATO, e solo quelli.
+     È quello che permette a due dispositivi di non cancellarsi a
+     vicenda: chi cambia il prezzo timbra il prezzo, chi scrive un
+     se–allora timbra quel se–allora, e la fusione sa quale dei due è
+     più recente CAMPO PER CAMPO. Con un orologio unico per tutto il
+     registro, cambiare il prezzo sul telefono avrebbe cancellato il
+     motivo scritto sul tablet cinque minuti prima.
+
+     `ripartenze` non si scrive più a mano da nessuna parte: è la conta
+     delle ricadute registrate più quelle ereditate dalle versioni
+     precedenti. Un numero solo, calcolato in un posto solo. */
   function salva(next, { pubblica = true } = {}) {
-    setDati(next);
+    const timbrato = timbra(datiRef.current, next, Date.now());
+    timbrato.ripartenze = (timbrato.ripartenzeBase || 0) + (timbrato.ricadute?.length || 0);
+    datiRef.current = timbrato;
+    setDati(timbrato);
     if (!user.id) return;
-    writeStore(logKey(user.id), next);
-    if (pubblica && next.groups?.length) groups.publish(next.groups, meCard, next);
+    writeStore(logKey(user.id), timbrato);
+    if (pubblica && timbrato.groups?.length) groups.publish(timbrato.groups, meCard, timbrato);
   }
 
   /* ------------------------- sincronizzazione gruppo ------------------------- */
@@ -473,9 +533,17 @@ export default function App() {
       body: 'Cancella tutte le sigarette registrate e fa ripartire la settimana di misura. Account, gruppo e piano restano.',
       confirmLabel: 'Azzera', danger: true,
       onConfirm: () => {
+        /* Le lapidi vanno portate avanti: senza, il primo riallineamento
+           col database — o con l'altro telefono — rimetterebbe dentro
+           tutto quello che si è appena chiesto di cancellare. Azzerare
+           deve essere un'operazione che si propaga, non un buco locale
+           che gli altri riempiono. */
         salva({
           ...vuotoLog(), groups: dati.groups, notify: dati.notify, avvisiCorpo: dati.avvisiCorpo,
           onboarded: true, profile: dati.profile, plans: dati.plans,
+          rimossi: seppellisciTutto(dati),
+          ripartenzeBase: 0,
+          orologi: dati.orologi,
         });
         annullaTappe().catch(() => {});
         // anche i "già visti" del gruppo vanno azzerati, altrimenti restano
@@ -665,7 +733,9 @@ export default function App() {
       start: dati.start ?? ts,
       cigs: [...dati.cigs, ts],
       tappeViste: { ref: ts, idx: [] },              // il conto del corpo riparte
-      ripartenze: (dati.ripartenze || 0) + (ricaduta ? 1 : 0),
+      // l'ISTANTE della ricaduta, non un contatore: si fonde come le
+      // sigarette, quindi due dispositivi non se ne perdono una
+      ricadute: ricaduta ? [...(dati.ricadute || []), ts] : (dati.ricadute || []),
     });
     setTappaBanner(null);
     // le tappe di recupero ripartono da questa sigaretta: a telefono chiuso
@@ -748,15 +818,33 @@ export default function App() {
     if (!nuovi.length) return;
 
     const primaDiTutto = dati;
-    const nuovoMin = nuovi[0];
+    const piuVecchia = nuovi[0];
     const riavvio = tappeDaRiavviare(dati.cigs, nuovi);
+    /* Durante un'astinenza dichiarata QUALSIASI sigaretta registrata è una
+       ricaduta, e le arretrate non fanno eccezione: chi dichiara di aver
+       smesso e poi segna tre sigarette di ieri ha ricaduto, anche se lo
+       sta dicendo con un giorno di ritardo. Il contatore dei giorni
+       ripartiva già da solo — è il riferimento a spostarsi — ma
+       `ripartenze` restava fermo, e due numeri raccontavano due storie.
+       La schermata resta quella che era: quella della ricaduta serve a chi
+       ha appena ceduto, non a chi sta mettendo in ordine il registro. */
+    const ricaduta = ricadutaArretrate(dati, nuovi);
+    /* La ricaduta si data sulla PRIMA sigaretta successiva alla
+       dichiarazione, non sull'istante in cui si è aperto il modulo:
+       l'istante è l'identità dell'evento, e datarlo «adesso» lo
+       renderebbe diverso su due dispositivi che registrano lo stesso
+       arretrato — cioè due ricadute invece di una. */
+    const nuoviMin = ricaduta
+      ? Math.min(...nuovi.filter((t) => t >= dati.smessoDal))
+      : null;
 
     salva({
       ...dati,
       // il percorso comincia dalla prima sigaretta conosciuta, anche se
       // quella prima sigaretta la scopriamo adesso
-      start: dati.start === null ? nuovoMin : Math.min(dati.start, nuovoMin),
+      start: dati.start === null ? piuVecchia : Math.min(dati.start, piuVecchia),
       cigs: [...dati.cigs, ...nuovi],
+      ricadute: ricaduta ? [...(dati.ricadute || []), nuoviMin] : (dati.ricadute || []),
       ...(riavvio === null ? {} : { tappeViste: { ref: riavvio, idx: [] } }),
     });
 
@@ -778,7 +866,12 @@ export default function App() {
      sbagliarli. */
   function annullaLotto() {
     if (!lotto) return;
-    salva(lotto.prima);
+    /* Rimettere il registro di prima non basta: le sigarette del lotto
+       possono essere già arrivate al database o all'altro dispositivo, e
+       senza lapidi tornerebbero indietro alla prima fusione. */
+    let prima = lotto.prima;
+    lotto.ts.forEach((t) => { prima = rimuoviIstante(prima, 'cigs', t); });
+    salva(prima);
     riallineaTappe(lotto.prima.cigs);
     setLotto(null);
     showToast('Annullato.');
@@ -846,13 +939,18 @@ export default function App() {
      produceva — perché un solo tocco sulla X ne cancellasse due, con tutti
      i conteggi sbagliati da lì in poi e nessun modo di accorgersene.
      L'etichetta si toglie solo se in quell'istante non resta niente. */
+  /* CANCELLARE NON È FILTRARE. Togliere l'istante dalla lista lasciava
+     l'altro dispositivo — e il database — con la sua copia intatta, e
+     alla prima fusione la sigaretta tornava dentro: l'unione non sa
+     distinguere «io non ce l'ho» da «io l'ho cancellata». La lapide
+     (`rimossi`) rende la cancellazione un fatto che viaggia insieme ai
+     dati, invece di un'assenza che si può interpretare al contrario. */
   function togliUna(ts) {
-    const i = dati.cigs.indexOf(ts);
-    if (i === -1) return null;
-    const cigs = [...dati.cigs.slice(0, i), ...dati.cigs.slice(i + 1)];
+    if (!dati.cigs.includes(ts)) return null;
+    const senza = rimuoviIstante(dati, 'cigs', ts);
     const tags = { ...dati.tags };
-    if (!cigs.includes(ts)) delete tags[ts];
-    return { cigs, tags };
+    delete tags[ts];
+    return { cigs: senza.cigs, rimossi: senza.rimossi, tags };
   }
 
   function handleAnnulla() {
@@ -888,6 +986,12 @@ export default function App() {
 
   /* ---------------------------- calcoli ---------------------------- */
 
+  /* LA COPERTURA — l'unione dei tratti di tempo in cui sappiamo davvero
+     cosa stava succedendo. Ricalcolata solo quando cambiano i dati, mai a
+     ogni tick: gli intervalli non sono tagliati su `adesso`, il taglio lo
+     fa `tempoCoperto` dentro i conti. */
+  const intervalli = useMemo(() => intervalliCoperti(dati), [dati]);
+
   const s = useMemo(() => {
     if (!dati || !dati.start) return null;
     const cigs = [...dati.cigs].sort((a, b) => a - b);
@@ -905,9 +1009,14 @@ export default function App() {
     const settTot = cigs.filter((t) => t >= inizioSett).length;
     const media = settTot / giorniTrascorsi;
 
+    /* Stessa regola per la media della settimana scorsa, che è il metro
+       dell'obiettivo settimanale: una settimana passata senza aprire
+       l'app produceva una media vicina allo zero e quindi un obiettivo
+       che nessuno può rispettare, presentato come se fosse il risultato
+       di un progresso. Se la settimana non è coperta almeno per mezza
+       giornata, l'obiettivo non c'è. */
     const precInizio = addGiorni(inizioSett, -7);
-    const precCigs = sett > 0 ? cigs.filter((t) => t >= precInizio && t < inizioSett).length : 0;
-    const mediaPrec = sett > 0 ? precCigs / 7 : null;
+    const mediaPrec = sett > 0 ? mediaCoperta(cigs, intervalli, precInizio, inizioSett) : null;
 
     const obiettivo = mediaPrec === null ? null : prossimaMedia(mediaPrec);
     /* floor e non round: la parola scritta accanto è «massimo». Con un
@@ -936,10 +1045,17 @@ export default function App() {
        correzione vale per tutte e tre le proiezioni.
        Con meno di un giorno pieno alle spalle non esiste ancora: null, e
        chi la mostra scrive un trattino. */
+    /* SUI GIORNI COPERTI, non sui giorni di calendario. Dividere per
+       sette conta come «zero sigarette» i giorni in cui l'app non sapeva
+       niente, ed è lo stesso errore che i contatori non fanno più. Non è
+       un dettaglio estetico: da qui esce la proiezione a un anno, e
+       sparire tre giorni su sette faceva scendere la media del 43% e
+       salire della stessa quota il risparmio annunciato per i dodici
+       mesi successivi. */
     const giorniPieni = Math.min(7, giorno);
     const media7 = giorniPieni === 0
       ? null
-      : cigs.filter((t) => t >= addGiorni(oggiTs, -giorniPieni) && t < oggiTs).length / giorniPieni;
+      : mediaCoperta(cigs, intervalli, addGiorni(oggiTs, -giorniPieni), oggiTs);
 
     const perFascia = FASCE.map((f) => ({
       label: f.label.slice(0, 3),
@@ -981,13 +1097,7 @@ export default function App() {
       resistSett: dati.resists.filter((t) => t >= inizioSett).length,
       topTrigger,
     };
-  }, [dati, now]);
-
-  /* LA COPERTURA — l'unione dei tratti di tempo in cui sappiamo davvero
-     cosa stava succedendo. Ricalcolata solo quando cambiano i dati, mai a
-     ogni tick: gli intervalli non sono tagliati su `adesso`, il taglio lo
-     fa `tempoCoperto` dentro i conti. */
-  const intervalli = useMemo(() => intervalliCoperti(dati), [dati]);
+  }, [dati, now, intervalli]);
 
   /* IL RIFERIMENTO — da quando dura il periodo senza fumare che mostriamo.
      Un solo valore per il numero grande della Home, le tappe del corpo, il
@@ -1205,20 +1315,16 @@ export default function App() {
     };
   }, [dati, s, now]);
 
-  const record = useMemo(() => {
-    if (!dati?.cigs.length) return { piuLungo: null };
-    const cigs = [...dati.cigs].sort((a, b) => a - b);
-    /* La pausa in corso si misura dal RIFERIMENTO, non dall'ultima
-       sigaretta: sono la stessa cosa finché siamo coperti, ma dopo un buco
-       il riferimento è più prudente e il record non rivendica giorni che
-       nessuno ha certificato.
-       Math.max(0, …): con l'orologio del telefono spostato indietro
-       l'ultima sigaretta può risultare nel futuro, e una pausa negativa
-       usciva a schermo come «NaN mesi». */
-    let piuLungo = Math.max(0, now - (rif ?? cigs[cigs.length - 1]));
-    for (let i = 1; i < cigs.length; i += 1) piuLungo = Math.max(piuLungo, cigs[i] - cigs[i - 1]);
-    return { piuLungo };
-  }, [dati, now, rif]);
+  /* Il record vive in conti.js (D12) perché è una regola, non una
+     riga di interfaccia: una pausa fra due sigarette conta solo se è
+     interamente dentro un tratto coperto. Prima scorreva le sigarette
+     due a due e basta, quindi dieci giorni di silenzio diventavano un
+     record di dieci giorni senza fumare — gli stessi dieci giorni che i
+     contatori si rifiutano di pagare. */
+  const record = useMemo(
+    () => ({ piuLungo: recordSenzaFumare(dati, now, intervalli, rif) }),
+    [dati, now, intervalli, rif],
+  );
 
   const mese = useMemo(() => {
     if (!dati || !dati.start) return null;
@@ -1263,11 +1369,16 @@ export default function App() {
        che non hai fumato» due centimetri sopra «in questo mese hai fumato
        117 sigarette in meno». Adesso passa da `atteseFra`, che è la
        funzione che usano anche i contatori, con la stessa baseline. */
-    const risparmiate = ritmo.pronta
-      ? Math.max(0, Math.round(
-        ritmo.valore * tempoCoperto(intervalli, Math.max(inizio30, dati.start), now) - totale,
-      ))
+    /* CON IL SEGNO, come lo scarto dei conti. Prima qui c'era un
+       `Math.max(0, ...)` e la frase sotto il grafico compariva solo quando
+       il numero era positivo: chi stava fumando più del proprio ritmo di
+       partenza non leggeva niente. Nascondere il caso brutto non è
+       gentilezza, è la stessa asimmetria che rendeva impossibile fidarsi
+       dei numeri — e le due card qui sopra il caso brutto lo dicono. */
+    const scarto = ritmo.pronta
+      ? ritmo.valore * tempoCoperto(intervalli, Math.max(inizio30, dati.start), now) - totale
       : null;
+    const risparmiate = scarto === null ? null : Math.round(scarto);
 
     return {
       totale, perSettimana, giorniZero, risparmiate,
@@ -1399,7 +1510,7 @@ export default function App() {
   /* I giorni di percorso: quanti giorni sono passati dall'inizio, non da
      quando hai smesso. È il numero su cui cresce la pianta, ed è l'unico
      che NON torna mai indietro dopo una ricaduta. */
-  const giorniPercorso = dati?.start ? dayDiff(dati.start, now) : 0;
+  const giorniPercorso = calcolaGiorniPercorso(dati, now);
 
   /* ---------------------------- render ---------------------------- */
 

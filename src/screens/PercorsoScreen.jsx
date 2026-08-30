@@ -1,4 +1,5 @@
 import { Flag, X, ListPlus } from 'lucide-react';
+import { ORE_TOLLERANZA } from '../constants';
 import { eur, eur0, eurUnitario, tempoVita, dec, durata, ora, etichettaGiorno } from '../utils/format';
 import { Timeline, Barre, CurvaRisparmio, Pianta } from '../components';
 
@@ -83,8 +84,17 @@ export default function PercorsoScreen({
           )}
 
           <h2 className="titolo-sezione stacco">Cosa sta recuperando il corpo</h2>
+          {/* «Sei a X dall'ultima» era falso in due casi su tre: per chi ha
+              dichiarato di aver smesso senza aver mai registrato una
+              sigaretta l'ultima non esiste, e dopo un buco di copertura il
+              riferimento è l'inizio del tratto certificato, non l'ultima
+              sigaretta. Il conto è sempre quello del riferimento (D4): qui
+              si dice quello che il numero misura davvero. */}
           <p className="testo-piccolo" style={{ marginTop: 8 }}>
-            Il conto riparte da ogni sigaretta. Sei a {rif ? durata(Math.max(0, now - rif)) : '—'} dall&apos;ultima.
+            {rif === null
+              ? 'Il conto parte dalla prima cosa che registri.'
+              : <>Il conto riparte da ogni sigaretta. Sono {durata(Math.max(0, now - rif))} che
+                il corpo lavora senza interruzioni.</>}
           </p>
           <Timeline tappe={tappe} />
         </>
@@ -127,7 +137,7 @@ export default function PercorsoScreen({
             <div className="card">
               <div className="etichetta">I conti sono in pausa</div>
               <p className="testo-piccolo" style={{ marginTop: 8 }}>
-                L&apos;ultima cosa che mi hai detto risale a più di 48 ore fa. Da lì in avanti non
+                L&apos;ultima cosa che mi hai detto risale a più di {ORE_TOLLERANZA} ore fa. Da lì in avanti non
                 so cosa è successo, quindi non conto quel tempo come risparmio: sarebbe come dare
                 per scontato che non hai fumato. Registra una sigaretta, conferma che sei a zero,
                 oppure dimmi che hai smesso — e da quel momento riparte.
@@ -137,8 +147,15 @@ export default function PercorsoScreen({
 
           {conti && (
             <>
-              <div className={`eroe-card ${conti.inRosso ? 'eroe-spento' : ''}`}>
-                <div className="etichetta">{conti.inRosso ? 'Sopra il ritmo di partenza' : 'Risparmiato finora'}</div>
+              <div className={`eroe-card ${conti.inRosso && !conti.inPari ? 'eroe-spento' : ''}`}>
+                {/* `inPari` viene prima: con uno scarto di −0,2 sigarette il
+                    numero è 0,00 € e l'etichetta diceva «Sopra il ritmo di
+                    partenza» mentre la riga sotto, nella stessa card,
+                    diceva «sei in pari». */}
+                <div className="etichetta">
+                  {conti.inPari ? 'In pari col ritmo di partenza'
+                    : conti.inRosso ? 'Sopra il ritmo di partenza' : 'Risparmiato finora'}
+                </div>
                 {/* Mai «−12,40 € risparmiati»: lo scarto dal ritmo ha un
                     segno, i soldi no. Sono due numeri diversi e tutti e due
                     positivi, ed è l'etichetta a dire quale dei due stai
@@ -183,8 +200,11 @@ export default function PercorsoScreen({
               </div>
 
               <div className="card stacco">
-                <div className="etichetta">{conti.inRosso ? 'Vita bruciata in più' : 'Vita non bruciata'}</div>
-                <div className={`eroe-val num ${conti.inRosso ? 'spento' : ''}`}>{tempoVita(conti.inRosso ? conti.vitaPersaInPiu : conti.vitaTenuta)}</div>
+                <div className="etichetta">
+                  {conti.inPari ? 'In pari, anche in tempo'
+                    : conti.inRosso ? 'Vita bruciata in più' : 'Vita non bruciata'}
+                </div>
+                <div className={`eroe-val num ${conti.inRosso && !conti.inPari ? 'spento' : ''}`}>{tempoVita(conti.inRosso ? conti.vitaPersaInPiu : conti.vitaTenuta)}</div>
                 <p className="eroe-sub">
                   Le stesse sigarette della card qui sopra, contate in tempo invece che in
                   euro: {conti.minutiPer} minuti l&apos;una. {conti.inRosso
@@ -275,6 +295,16 @@ export default function PercorsoScreen({
                   Settimana di misura: nessun limite. Serve a sapere da dove parti — l'obiettivo
                   arriva fra {Math.max(0, 7 - s.giorniTrascorsi)} giorni.
                 </p>
+              ) : s.mediaPrec == null ? (
+                /* La settimana scorsa non è coperta abbastanza per farci
+                   una media: un obiettivo costruito su giorni in cui
+                   l'app non sapeva niente sarebbe un numero inventato, e
+                   per giunta irraggiungibile. */
+                <p className="testo-piccolo" style={{ marginTop: 8 }}>
+                  Della settimana scorsa non so abbastanza per darti un obiettivo: sono passati
+                  troppi giorni senza che mi dicessi com&apos;era andata. Registra qualcosa oggi e
+                  la prossima settimana riparte il conto.
+                </p>
               ) : (
                 <p className="testo-piccolo" style={{ marginTop: 8 }}>
                   Obiettivo: {s.obiettivo < 0.5 ? 'zero sigarette' : `massimo ${dec(s.obiettivo)} al giorno`}.
@@ -294,10 +324,18 @@ export default function PercorsoScreen({
                     divisa per sette farebbe sembrare un calo quello che è solo l&apos;ora.
                   </p>
                   <Barre dati={mese.perSettimana} budget={null} evidenzia={mese.perSettimana.length - 1} />
-                  {mese.risparmiate > 0 && (
+                  {/* Prima questa frase compariva solo col segno positivo:
+                      chi stava sopra il proprio ritmo di partenza non
+                      leggeva niente, e la stessa quantità che nelle due
+                      card qui sopra viene detta in tutte e due le
+                      direzioni qui spariva in una sola. */}
+                  {mese.risparmiate != null && mese.risparmiate !== 0 && (
                     <p className="testo-piccolo" style={{ marginTop: 16 }}>
                       Rispetto al ritmo da cui sei partito, in questo mese hai fumato{' '}
-                      <b>{mese.risparmiate} sigarette in meno</b>.
+                      <b>
+                        {Math.abs(mese.risparmiate)} sigarette
+                        {mese.risparmiate > 0 ? ' in meno' : ' in più'}
+                      </b>.
                     </p>
                   )}
                 </>

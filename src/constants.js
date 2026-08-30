@@ -58,6 +58,14 @@ export const SOGLIA_RICADUTA = 20 * 3600000;
 /* ------------------------------------------------------------------ */
 export const TOLLERANZA_COPERTURA = 48 * 3600000;
 
+/* Le stesse ore, in ore, per i testi che le nominano.
+   «Sono passate più di 48 ore» era scritto a mano in due schermate: la
+   costante qui sopra si poteva cambiare in un secondo e l'interfaccia
+   avrebbe continuato a dire 48 a chiunque, cioè avrebbe mentito senza che
+   nessun test se ne accorgesse. Un numero visibile che nasce altrove non
+   è una fonte di verità sola: è due. */
+export const ORE_TOLLERANZA = TOLLERANZA_COPERTURA / 3600000;
+
 /* Jackson, Jarvis & West — "The price of a cigarette: 20 minutes of life?",
    Addiction (2024), studio UCL commissionato dal Dipartimento della Salute UK.
    Media 20 minuti per sigaretta: 17 per gli uomini, 22 per le donne.

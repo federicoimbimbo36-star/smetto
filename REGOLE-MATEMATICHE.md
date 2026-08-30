@@ -23,6 +23,33 @@ Da qui discende tutto il resto.
 
 ---
 
+## I numeri delle regole
+
+Le regole hanno due numerazioni in giro: quella di questo documento e quella
+dell'elenco delle quattordici grandezze usato nelle richieste. Sono la stessa
+cosa detta in due ordini, e confonderle è già costato: nel codice `D5` indicava
+i «giorni a zero» mentre qui `D5` sono i «giorni senza fumare». **Vale questa
+tabella**, e i commenti di `src/utils/conti.js` adesso la seguono.
+
+| qui | grandezza | dove sta |
+|---|---|---|
+| D1 | ritmo di partenza | `calcolaBaseline` |
+| D2 | copertura | `intervalliCoperti` |
+| D3 | tempo contato | `tempoCoperto` |
+| D4 | riferimento dell'astinenza | `riferimentoAstinenza` |
+| D5 | giorni senza fumare | `giorniSenzaFumare` |
+| D6 | giorni di percorso | `giorniPercorso` |
+| D7 | scarto, risparmiato, speso in più, vita | `calcolaConti` |
+| D8 | ricaduta | `eRicaduta`, `ricadutaArretrate` |
+| D9 | dichiarazione di aver smesso | `dichiaraSmesso` / `annullaSmesso` |
+| D10 | giorni a zero | `giorniZeroCoperti` |
+| D11 | classifica | `dichiarato` in `App.jsx` |
+| D12 | record senza fumare | `recordSenzaFumare` |
+| D13 | medie di periodo | `mediaCoperta` |
+| D14 | il registro come dato condiviso | `utils/fusione.js` |
+
+---
+
 ## D1 · Il ritmo di partenza (`calcolaBaseline`)
 
 ```
@@ -57,7 +84,11 @@ C = unione fusa degli intervalli
 ```
 
 `TOLLERANZA_COPERTURA` vale **48 ore** ed è definita **in un punto solo**,
-`src/constants.js`. Nessun altro algoritmo ha una tolleranza propria.
+`src/constants.js`. Nessun altro algoritmo ha una tolleranza propria, e
+nemmeno nessun testo: le due schermate che dicono «sono passate più di 48 ore»
+leggono `ORE_TOLLERANZA`, che nasce dalla costante. Prima il numero era
+scritto a mano, quindi cambiare la tolleranza avrebbe fatto mentire
+l'interfaccia senza che nessun controllo se ne accorgesse.
 
 Gli intervalli **non** sono tagliati su `adesso`: si calcolano una volta al
 giorno e restano validi mentre i contatori scorrono al secondo. Il taglio lo fa
@@ -76,8 +107,24 @@ tempoContato(P) = Σ giorniFra(max(a, P.da), min(b, P.a))   su [a,b] ∈ C
 del giorno a cui appartengono, quindi non sbaglia nei due giorni del cambio
 d'ora.
 
-Invariante: `0 ≤ tempoContato ≤ giorniFra(start, adesso)`, con **uguaglianza
-esatta in astinenza dichiarata**.
+Invariante: `0 ≤ tempoContato ≤ giorniFra(start, adesso)`.
+
+**Correzione.** Qui c'era scritto «con uguaglianza esatta in astinenza
+dichiarata», ed era falso. La dichiarazione non copre all'indietro (D2):
+chi ha un buco *prima* di dichiarare se lo tiene per sempre, e il tempo
+contato resta minore del tempo di percorso. Un banco da quattromila registri
+casuali lo smentiva in centinaia di casi. L'uguaglianza vera è più stretta e
+riguarda solo il tratto successivo:
+
+```
+tempoContato([smessoDal, adesso]) = giorniFra(smessoDal, adesso)     sempre
+tempoContato([start, adesso])     ≤ giorniFra(start, adesso)         sempre
+```
+
+La riga sbagliata non era innocua: chi l'avesse presa per buona e avesse
+«aggiustato» il codice per farla tornare avrebbe rimesso in piedi esattamente
+il bug che la copertura esiste per impedire — dieci giorni di silenzio pagati
+come dieci giorni senza fumare.
 
 ## D4 · Il riferimento dell'astinenza (`riferimentoAstinenza`)
 
@@ -106,7 +153,7 @@ non possono contraddirsi.
 ## D6 · Giorni di percorso
 
 ```
-giorniPercorso = dayDiff(start, adesso)
+giorniPercorso = max(0, dayDiff(start, adesso))       → conti.js
 ```
 
 Giorni di **calendario**. Unità volutamente diversa da D5: uno è tempo
@@ -157,6 +204,16 @@ Durante un'astinenza dichiarata **qualsiasi** sigaretta è una ricaduta, anche a
 tre ore dalla precedente. La seconda condizione evita di contarne un'altra
 venti minuti dopo: solo la prima.
 
+**Anche le arretrate** (`ricadutaArretrate`). Chi dichiara di aver smesso e poi
+mette in ordine il registro segnando tre sigarette di ieri ha ricaduto, e lo
+sta dicendo con un giorno di ritardo. Prima `registraArretrate` non passava di
+qui: il contatore dei giorni ripartiva da solo — è il riferimento a spostarsi —
+mentre `ripartenze` restava fermo, e due numeri raccontavano due storie sugli
+stessi dati. Vale solo la prima condizione, non la pausa lunga: mettere in
+ordine il registro dopo tre giorni di silenzio, in fase di riduzione, non è
+ricadere. La schermata «Ripartiamo da qui» resta fuori — serve a chi ha appena
+ceduto, non a chi sta compilando.
+
 ## D9 · Dichiarare di aver smesso
 
 Imposta `smessoDal = adesso` **solo se non è già impostata**, e `start = adesso`
@@ -193,6 +250,51 @@ attivo           = dichiarato(oggi) || dichiarato(ieri)
 Stessa regola dei conti: la dichiarazione dà significato al silenzio. Chi ha
 smesso davvero non deve tornare ogni giorno a giustificarsi, e chi non registra
 niente non può restare primo per inerzia.
+## D12 · Il record senza fumare (`recordSenzaFumare`)
+
+```
+record = max( adesso − RIF ,  max{ c[i] − c[i−1] : [c[i−1], c[i]] ⊆ C } )
+```
+
+Una pausa fra due sigarette conta come record **solo se sta tutta dentro
+un tratto coperto**. È la stessa condizione dei giorni a zero (D10), e per
+la stessa ragione: dieci giorni di silenzio non sono dieci giorni senza
+fumare, sono dieci giorni ignoti.
+
+Prima il record scorreva le sigarette due a due e prendeva la distanza più
+grande. «Assenza di dati ≠ zero» valeva per i soldi e per i giorni a zero,
+non qui — ed è peggio che nei contatori: un record resta scritto, diventa
+il numero da battere, e sta accanto alla scritta «il tuo record senza
+fumare» come se qualcuno l'avesse verificato.
+
+Con la tolleranza a 48 ore la regola dice: una pausa più lunga di due
+giorni conta solo se in mezzo ti sei fatto vivo — una voglia superata, un
+«oggi zero», o una dichiarazione di aver smesso, che copre tutto da lì in
+avanti. Che è esattamente la persona che quel record se lo merita.
+
+La pausa **in corso** vale sempre, perché si misura da RIF (D4), che è già
+prudente per costruzione.
+
+## D13 · Le medie di periodo (`mediaCoperta`)
+
+```
+media(P) = |cigs ∩ P| / tempoContato(P)        null se tempoContato(P) < 0,5 g
+```
+
+Stessa regola, applicata al denominatore: dividere per i giorni di
+calendario significa contare come «zero sigarette» i giorni in cui l'app
+non sapeva niente.
+
+Non è un dettaglio estetico. Da `media7` esce la proiezione a un anno:
+sparire tre giorni su sette faceva scendere la media del 43% e salire
+della stessa quota il risparmio annunciato per i dodici mesi successivi.
+E da `mediaPrec` esce l'obiettivo settimanale: una settimana passata senza
+aprire l'app produceva un obiettivo vicino a zero, irraggiungibile,
+presentato come se fosse il risultato di un progresso.
+
+Sotto il mezzo giorno coperto il valore è `null` e chi lo mostra scrive un
+trattino, oppure — per l'obiettivo — dice che non lo sa.
+
 
 ---
 
@@ -270,3 +372,41 @@ smesso e poi fuma senza registrarlo accumula giorni che non ha fatto. Non c'è
 modo di saperlo dai dati: la contromisura è sociale, non algoritmica — nel
 gruppo la riga mostra la natura dello zero, e chi vuole può tornare in
 riduzione.
+
+---
+
+## D14 · Il registro come dato condiviso
+
+Le regole D1–D13 dicono come si contano le sigarette. Questa dice che
+cosa **è** una sigaretta quando la stessa persona ha due telefoni.
+
+```
+cigs(A ⊕ B)    = ( cigs(A) ∪ cigs(B) ) \ ( rimossi(A) ∪ rimossi(B) )
+rimossi(A ⊕ B) = rimossi(A) ∪ rimossi(B)
+campo(A ⊕ B)   = quello con l'orologio più alto, campo per campo
+start(A ⊕ B)   = min
+```
+
+**L'istante in millisecondi è l'identità dell'evento.** Lo era già di
+fatto — su quello sono indicizzate le etichette del registro — e adesso lo
+è anche formalmente: due sigarette non possono condividere un
+millisecondo, e la stessa sigaretta ha lo stesso identificativo su tutti i
+dispositivi.
+
+Da qui discende tutto: due dispositivi non si perdono niente, i tentativi
+ripetuti non duplicano, e **l'ordine con cui le sincronizzazioni arrivano
+non cambia il risultato finale**. La fusione è commutativa, associativa e
+idempotente.
+
+Le cancellazioni sono **lapidi**, non assenze: senza, l'unione farebbe
+risorgere ogni sigaretta tolta dal registro alla prima sincronizzazione.
+
+Le ricadute sono diventate un **insieme di istanti** invece di un
+contatore. Un contatore scalare non si fonde: due dispositivi che salgono
+da 3 a 4 ciascuno, riconciliati con «vince il più recente», danno 4 e non
+5. `ripartenzeBase` porta avanti il numero delle versioni precedenti senza
+inventare istanti che nessuno ha registrato, e il numero mostrato è la
+somma dei due.
+
+Definizioni e dimostrazioni: `src/utils/fusione.js` e
+`verifica/persistenza.mjs`.

@@ -59,10 +59,30 @@ export default function ProfiloScreen({
      senza preavviso fa sembrare che l'app abbia perso i conti. */
   const [avviso, setAvviso] = useState(null);
 
+  /* Quando i conti sono già a schermo, TUTTO quello che entra nelle loro
+     formule riscrive anche il passato. La condizione di prima chiedeva che
+     il valore vecchio e quello nuovo fossero entrambi diversi da null, e
+     lasciava passare in silenzio i tre casi che cambiano di più:
+       · il ritmo dedotto dai dati che diventa un ritmo dichiarato — cioè
+         esattamente lo scenario F, quello che avrebbe dovuto avvisare;
+       · un valore cancellato, che fa sparire i conti invece di spostarli;
+       · le sigarette per pacchetto, che dividono il prezzo unitario e non
+         passavano affatto da qui: da 20 a 10 il risparmio di tutto il
+         percorso raddoppia, senza una parola.
+     Adesso la domanda è una sola: questo cambiamento tocca numeri che la
+     persona ha già visto? Se sì, glielo si dice prima. */
+  const contiAttivi = Boolean(conti);
+
   const confermaConAvviso = (campo, valore, testoAvviso) => {
     const attuale = profile[campo] ?? null;
-    if (attuale !== null && valore !== null && attuale !== valore && totale > 0) {
-      setAvviso({ campo, valore, testo: testoAvviso });
+    if (attuale !== valore && totale > 0 && contiAttivi) {
+      setAvviso({
+        campo,
+        valore,
+        testo: valore === null
+          ? 'Cancellandolo i conti dei risparmi spariscono dal Percorso e dalla Home finché non lo rimetti.'
+          : testoAvviso,
+      });
       return false;
     }
     onProfileChange(campo, valore);
@@ -79,8 +99,9 @@ export default function ProfiloScreen({
   const confermaPerPacchetto = () => {
     const n = Math.round(Number(perPacchettoDraft));
     const valido = Number.isFinite(n) && n > 0 ? n : 20;
-    onProfileChange('perPacchetto', valido);
-    setPerPacchettoDraft(String(valido));
+    const fatto = confermaConAvviso('perPacchetto', valido,
+      'Quante sigarette contiene il pacchetto decide quanto costa una sigaretta, quindi cambia anche i soldi risparmiati di tutto il percorso, non solo da oggi.');
+    if (fatto) setPerPacchettoDraft(String(valido));
   };
   const confermaBaseline = () => {
     const n = Number(baselineDraft.replace(',', '.'));
@@ -99,6 +120,8 @@ export default function ProfiloScreen({
     if (!avviso) return;
     if (avviso.campo === 'prezzoPacchetto') {
       setPrezzoDraft(profile.prezzoPacchetto == null ? '' : String(profile.prezzoPacchetto).replace('.', ','));
+    } else if (avviso.campo === 'perPacchetto') {
+      setPerPacchettoDraft(String(profile.perPacchetto ?? 20));
     } else {
       setBaselineDraft(profile.baseline == null ? '' : String(profile.baseline).replace('.', ','));
     }
@@ -289,8 +312,15 @@ export default function ProfiloScreen({
 
       <div className="campo">
         <label className="campo-label" htmlFor="p-base">Quante ne fumavi al giorno prima di iniziare</label>
+        {/* inputMode="decimal" e NON type="number": è lo stesso identico
+            difetto già corretto sul prezzo del pacchetto, rimasto qui.
+            Il campo tiene una bozza di testo con la virgola — la riga qui
+            sopra fa String(baseline).replace('.', ',') — ma un input
+            numerico rifiuta la virgola e il browser gli assegna la stringa
+            vuota: chi fumava 12,5 sigarette al giorno apriva il Profilo e
+            trovava il campo VUOTO, e non aveva modo di riscriverlo. */}
         <input
-          id="p-base" className="campo-input" type="number" inputMode="numeric" placeholder="Es. 15"
+          id="p-base" className="campo-input" inputMode="decimal" placeholder="Es. 15"
           value={baselineDraft} onChange={(e) => setBaselineDraft(e.target.value)}
           onBlur={confermaBaseline} onKeyDown={invio(confermaBaseline)}
         />

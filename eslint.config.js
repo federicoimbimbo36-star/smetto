@@ -23,4 +23,22 @@ export default [
       'no-console': ['warn', { allow: ['warn', 'error'] }],
     },
   },
+  /* I file di verifica girano su Node, non nel browser: senza questo
+     blocco `npm run lint` segnalava venti errori su `console`, `process`
+     e `setTimeout` che non erano errori — e un lint che grida al lupo
+     ogni volta è un lint che nessuno guarda più. Qui `console.log` è il
+     modo in cui i controlli riportano l'esito, quindi la regola che lo
+     vieta non si applica. */
+  {
+    files: ['verifica/**/*.mjs', 'verifica/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      globals: { ...globals.node },
+    },
+    rules: {
+      'no-console': 'off',
+      'no-unused-vars': ['warn', { args: 'none', caughtErrors: 'none' }],
+    },
+  },
 ];

@@ -9,8 +9,9 @@ valore teoricamente corretto, su scenari costruiti apposta. Tutti i numeri
 Esito dell'analisi: **64 algoritmi controllati, 35 corretti, 5 problemi critici,
 9 importanti, 17 minori.** Questo documento è il registro delle correzioni.
 
-Verifica: `npm run verifica` — 122 controlli sui calcoli (scritti per fallire
-con il codice di prima) più 961 su markup, CSS e accessibilità.
+Verifica: `npm run verifica` — 311 controlli sui calcoli e 56 sulla persistenza
+(scritti per fallire con il codice di prima) più 1.001 su markup, CSS e
+accessibilità. L'audit della persistenza sta in `PERSISTENZA.md`.
 
 Il livello basso era già solido e non è stato toccato nella sostanza: date,
 cambio d'ora nelle chiavi della classifica, anno bisestile, `ymd`/`daYmd` su
@@ -325,3 +326,141 @@ due grandezze separate in `calcolaConti`. Tre invarianti lo tengono fermo, su
 ogni periodo e in tutte e due le direzioni: nessuno dei due valori è mai
 negativo, non sono mai entrambi maggiori di zero, e la loro differenza è sempre
 lo scarto per il prezzo.
+
+---
+
+# Terza tornata: rileggere l'implementazione, non la specifica
+
+Le due tornate qui sopra hanno definito il modello e l'hanno scritto. Questa è
+partita dal presupposto opposto: dare per **non** dimostrato che il codice
+faccia quello che i documenti dicono, e provare a smontarlo.
+
+Lo strumento nuovo è il **banco delle invarianti** (`controlli.mjs`, sezione
+23): quattromila registri generati a caso — storici da zero a quattrocento
+giorni, fino a trecento sigarette, prezzi da un centesimo a mille euro,
+pacchetti da 10/20/25/30, ritmo dichiarato o dedotto, dichiarazione di aver
+smesso in un istante qualsiasi — e su ognuno le tredici invarianti pretese
+tutte insieme. Il seme è fisso, quindi il banco è sempre lo stesso: se domani
+qualcuno cambia una formula, salta fuori con lo scenario preciso.
+
+Il modello ha retto: nessuna violazione. **Hanno ceduto altre nove cose**, e
+nessuna era un errore di aritmetica.
+
+## Il campo del ritmo di partenza rifiutava i decimali
+
+`ProfiloScreen.jsx`, `OnboardingScreen.jsx`
+
+È lo stesso identico difetto già corretto sul prezzo del pacchetto, rimasto in
+due punti. Il campo tiene una bozza di testo con la virgola — la riga sopra fa
+`String(baseline).replace('.', ',')` — ma era un `type="number"`, e un input
+numerico la virgola la rifiuta: il browser gli assegna la stringa vuota.
+
+Chi fumava dodici sigarette e mezza al giorno apriva il Profilo e trovava il
+campo **vuoto**, senza modo di riscriverlo. Nessun controllo poteva accorgersene,
+perché i controlli non aprono un browser: è il tipo di bug che si vede solo
+rileggendo il codice con in mano la domanda «questo numero, chi lo può davvero
+scrivere?».
+
+## Cambiare le sigarette per pacchetto riscriveva lo storico in silenzio
+
+`ProfiloScreen.jsx`
+
+L'avviso «questo cambia anche il passato» copriva prezzo e ritmo, non il numero
+di sigarette nel pacchetto — che divide il prezzo unitario esattamente come
+l'altro fattore. Da venti a dieci, il risparmio di tutto il percorso raddoppia,
+senza una parola.
+
+## E non scattava proprio nello scenario che doveva coprire
+
+La condizione era `attuale !== null && valore !== null`. Lasciava passare in
+silenzio i due casi che spostano di più:
+
+- il ritmo **dedotto dai dati** che diventa un ritmo **dichiarato** — cioè lo
+  scenario F, quello per cui l'avviso era stato scritto;
+- un valore **cancellato**, che non sposta i conti: li fa sparire.
+
+Adesso la domanda è una sola: questo cambiamento tocca numeri che la persona ha
+già visto? Se sì, glielo si dice prima.
+
+## Il record contraddiceva la Home
+
+`App.jsx` — `record`
+
+Scenario E, chi dichiara di aver smesso senza aver mai registrato una sigaretta:
+`record` leggeva `dati.cigs.length` e usciva un trattino, mentre due centimetri
+sopra la Home diceva «10 giorni senza fumare». Due schermate, due risposte alla
+stessa domanda — che è esattamente la famiglia di bug che questo progetto ha
+passato due audit a estirpare. Adesso senza sigarette il record è la pausa in
+corso, misurata dal riferimento.
+
+## Le arretrate non contavano la ricaduta
+
+`App.jsx` — `registraArretrate`, `conti.js` — `ricadutaArretrate`
+
+La regola dice che durante un'astinenza dichiarata qualsiasi sigaretta
+registrata è una ricaduta. Le arretrate non facevano eccezione a parole ma la
+facevano nei fatti: il contatore dei giorni ripartiva da solo — è il riferimento
+a spostarsi — mentre `ripartenze` restava fermo.
+
+Non si riusa `eRicaduta` così com'è: la sua seconda condizione, la pausa lunga,
+scatterebbe anche fuori dall'astinenza, e mettere in ordine il registro non è
+ricadere. La schermata «Ripartiamo da qui» resta comunque fuori, per la stessa
+ragione.
+
+## «48 ore» scritto a mano in due schermate
+
+`constants.js` — `ORE_TOLLERANZA`
+
+La tolleranza era definita in un punto solo, come previsto; il numero **detto
+all'utente** no. Cambiare la costante avrebbe fatto mentire due schermate senza
+che nessun controllo se ne accorgesse. Un numero visibile che nasce altrove non
+è una fonte di verità sola: è due.
+
+## `giorniZeroCoperti` esplodeva
+
+`conti.js`
+
+`mese` passa `dati` così com'è, e `dati.cigs` può mancare. Verificato, non
+supposto: `TypeError: Cannot read properties of undefined (reading 'some')`, e
+con lui l'intera schermata dei Numeri.
+
+## `maxTs` poteva restituire una stringa
+
+`format.js`
+
+Con una stringa nel registro il confronto `'x' > 12345` è falso in tutti e due i
+versi, quindi `maxTs` poteva restituire la stringa; da lì
+`Math.max(ultima, certificato)` faceva `NaN` e **il riferimento dell'astinenza
+spariva**, cioè la fonte del numero grande della Home, delle tappe del corpo e
+del record. Senza nessun errore visibile. Il registro oggi viene ripulito al
+caricamento, quindi la strada è chiusa a monte — ma sarà riaperta il giorno che
+si potrà reimportare un backup JSON, che è l'unica funzione già in lista.
+
+## Il mese sapeva dire solo il caso bello
+
+`App.jsx` — `mese`, `PercorsoScreen.jsx`
+
+Il valore passava per un `Math.max(0, …)`, quindi la frase sotto il grafico
+compariva solo col segno positivo: chi fumava più del proprio ritmo di partenza
+non leggeva niente. Le due card sopra il caso brutto lo dicono; nascondere solo
+lì non è gentilezza, è la stessa asimmetria che rende impossibile fidarsi dei
+numeri. Nella stessa riga: l'etichetta «Sopra il ritmo di partenza» conviveva
+con «sei in pari» dentro la stessa card, quando lo scarto era negativo ma sotto
+la mezza sigaretta.
+
+## E una riga sbagliata nella specifica
+
+`REGOLE-MATEMATICHE.md` — D3
+
+Diceva che in astinenza dichiarata il tempo contato è **esattamente** il tempo
+di percorso. Il banco l'ha smentita in centinaia di casi: la dichiarazione non
+copre all'indietro, quindi un buco precedente resta escluso per sempre — ed è
+corretto che sia così.
+
+È il difetto più pericoloso dei nove, perché non è nel codice. Chi avesse letto
+quella riga e «aggiustato» il codice per farla tornare avrebbe rimesso in piedi
+esattamente il bug che la copertura esiste per impedire.
+
+Stessa famiglia: i commenti di `conti.js` numeravano le regole in un ordine e la
+specifica in un altro — `D5` erano i «giorni a zero» nel codice e i «giorni
+senza fumare» nel documento. Adesso c'è una tabella sola, in cima alle regole.

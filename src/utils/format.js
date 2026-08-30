@@ -42,8 +42,18 @@ export const giorniFra = (a, b) => {
    invece di −Infinity, così `if (ultima)` si comporta come ci si aspetta. */
 export const maxTs = (lista) => {
   if (!lista || !lista.length) return null;
-  let m = lista[0];
-  for (let i = 1; i < lista.length; i += 1) if (lista[i] > m) m = lista[i];
+  /* Solo numeri veri. Con una stringa in mezzo — e da un backup JSON
+     reimportato ci arriva — il confronto `'x' > 12345` è falso in tutti e
+     due i versi, quindi maxTs poteva restituire la stringa; da lì
+     `Math.max(ultima, certificato)` faceva NaN e il riferimento
+     dell'astinenza, che è la fonte del numero grande della Home, spariva
+     senza nessun errore visibile. */
+  let m = null;
+  for (let i = 0; i < lista.length; i += 1) {
+    const v = lista[i];
+    if (!Number.isFinite(v)) continue;
+    if (m === null || v > m) m = v;
+  }
   return m;
 };
 

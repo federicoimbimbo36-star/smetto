@@ -130,8 +130,13 @@ export default function OnboardingScreen({ iniziale, onFine, onChiediPermesso })
             </p>
             <div className="campo">
               <label className="campo-label" htmlFor="onb-base">Sigarette al giorno</label>
+              {/* inputMode="decimal": più sotto il valore viene letto con
+                  Number(String(baseline).replace(',', '.')), cioè la
+                  virgola è prevista — ma un input numerico non la fa
+                  nemmeno digitare, e chi fuma «un pacchetto e mezzo» non
+                  poteva scrivere 12,5. */}
               <input
-                id="onb-base" className="campo-input" type="number" inputMode="numeric"
+                id="onb-base" className="campo-input" inputMode="decimal"
                 placeholder="Es. 15" value={baseline}
                 onChange={(e) => setBaseline(e.target.value)} autoFocus
               />
