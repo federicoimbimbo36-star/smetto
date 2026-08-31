@@ -34,7 +34,6 @@ const ms = (iso) => (iso ? new Date(iso).getTime() : null);
    dichiarato non funzionava proprio. */
 const spento = () => {
   if (!supabase) {
-    // eslint-disable-next-line no-console
     console.warn('[groups] Supabase non configurato: i gruppi non sono disponibili in modalità locale.');
     return true;
   }

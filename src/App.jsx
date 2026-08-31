@@ -84,7 +84,19 @@ export default function App() {
 
   const [dati, setDati] = useState(null);
   const [now, setNow] = useState(Date.now());
-  const [tick, setTick] = useState(0);          // batte ogni secondo: fa muovere i contatori
+  /* L'OROLOGIO DEI CONTATORI, non un contatore anonimo.
+
+     Prima era `useState(0)` incrementato di uno al secondo, e serviva solo
+     a comparire fra le dipendenze di `conti` per farlo ricalcolare: il
+     valore non lo leggeva nessuno. Un battito che non porta l'ora è una
+     dipendenza che la regola dei hook non può che segnalare come inutile —
+     perché dal suo punto di vista lo è davvero.
+
+     Adesso porta l'istante in cui ha battuto, e quell'istante entra nel
+     calcolo: `calcolaConti(base, adesso)` lo accetta come secondo
+     parametro, ed è esattamente il valore che prima leggeva da sola col
+     suo `Date.now()` di riserva. */
+  const [tick, setTick] = useState(() => Date.now());
   /* L'IDENTIFICATIVO dell'ultima sigaretta registrata, non il suo
      istante: serve a sapere quale annullare e a quale attaccare il
      motivo, e due sigarette possono condividere il millisecondo. */
@@ -243,7 +255,7 @@ export default function App() {
   // i contatori si muovono solo dove si vedono, per non far lavorare il telefono a vuoto
   useEffect(() => {
     if (activeTab !== 'oggi' && activeTab !== 'percorso') return;
-    const i = setInterval(() => setTick((t) => t + 1), 1000);
+    const i = setInterval(() => setTick(Date.now()), 1000);
     return () => clearInterval(i);
   }, [activeTab]);
 
@@ -394,6 +406,19 @@ export default function App() {
       writeStore(seenKey(user.id), visti_);
       if (!dentroGruppo) setNonLetti((n) => n + nuovi);
     }
+    /* LA LISTA È PIÙ STRETTA DEL CORPO, E DI PROPOSITO.
+
+       Questo effetto scandisce i conteggi del GRUPPO per accorgersi che
+       qualcun altro ha registrato. Il corpo tocca anche `dati` intero (via
+       `datiRef`) e qualche funzione di comodo, ma metterli fra le
+       dipendenze vorrebbe dire rifare la scansione a ogni sigaretta
+       registrata da noi — cioè a ogni cambio del registro personale, che
+       con questo effetto non c'entra. La soppressione tiene ferma quella
+       distinzione: non nasconde un avviso, dichiara una scelta.
+
+       Non è stata toccata nella fase di igiene perché cambiarla significa
+       cambiare quando arrivano le notifiche, e quello si prova con due
+       telefoni, non con il linter. */
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dati?.groups, dati?.notify, user.id, dentroGruppo]);
 
@@ -1268,6 +1293,16 @@ export default function App() {
       setTappaBanner(ultima);
     }
     salva({ ...dati, tappeViste: { ref: rif, idx: [...viste, ...nuove] } });
+    /* IDEM QUI, e per un motivo più stretto ancora: l'ultima riga del corpo
+       chiama `salva({ ...dati, tappeViste })`, quindi `dati` cambia per
+       causa di questo stesso effetto. Metterlo fra le dipendenze vuol dire
+       farlo rientrare subito dopo essere uscito. Si ferma da solo — il
+       `return` su `nuove.length === 0` lo taglia al secondo giro — ma
+       resterebbe un effetto che si rincorre a ogni tappa del corpo.
+
+       Le dipendenze vere sono il tempo che passa (`now`), il punto da cui
+       si contano le tappe (`rif`) e l'essere entrati: quelle ci sono
+       tutte. */
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [now, rif, isAuthenticated]);
 
@@ -1356,7 +1391,17 @@ export default function App() {
   /* Il calcolo vive in utils/conti.js: è una funzione pura, quindi
      verifica/controlli.mjs può controllarne la coerenza interna senza
      montare React. Qui resta solo la memoizzazione. */
-  const conti = useMemo(() => calcolaConti(contiBase), [contiBase, tick, now]);
+  /* L'ISTANTE PIÙ FRESCO FRA I DUE BATTITI, ed è l'unica dipendenza che
+     serve oltre ai dati.
+
+     `tick` batte ogni secondo ma SOLO nelle schede Oggi e Percorso, per non
+     far lavorare il telefono a vuoto; `now` batte ogni quindici secondi
+     sempre. Prendendo il maggiore dei due si ottiene esattamente quello che
+     succedeva prima, quando `calcolaConti` leggeva l'orologio per conto suo
+     e le due variabili servivano solo a farla rieseguire: un secondo dove i
+     numeri si vedono, quindici dove non si vedono. */
+  const adessoConti = Math.max(tick, now);
+  const conti = useMemo(() => calcolaConti(contiBase, adessoConti), [contiBase, adessoConti]);
 
   const tappe = useMemo(() => {
     const quanto = (min) => {
@@ -1440,7 +1485,17 @@ export default function App() {
       dataZero: new Date(lunediSett(settZero))
         .toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' }),
     };
-  }, [dati, s, now]);
+    /* `ritmo.pronta` e `ritmo.valore` MANCAVANO, e il piano li legge (riga
+       `const base = …` qui sopra). Sono le due dipendenze che decidono la
+       base del piano, quindi senza di loro il piano poteva restare quello
+       calcolato con il ritmo di prima. Non è un caso di scuola: `ritmo` si
+       ricalcola anche quando cambia `oggiChiave`, cioè al cambio di giorno,
+       e lì `dati` può non essere cambiato affatto.
+
+       Sono due primitivi — un booleano e un numero — quindi entrano nelle
+       dipendenze senza portarsi dietro l'identità di un oggetto nuovo a
+       ogni render: il memo si rifà quando cambia il ritmo, non a ogni giro. */
+  }, [dati, s, now, ritmo.pronta, ritmo.valore]);
 
   /* Il record vive in conti.js (D12) perché è una regola, non una
      riga di interfaccia: una pausa fra due sigarette conta solo se è

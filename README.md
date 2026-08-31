@@ -15,13 +15,39 @@ Poi apri l'indirizzo che stampa Vite (`http://localhost:5173`). Vite parte con
 quello lo puoi aprire dal telefono, se è sulla stessa rete di casa.
 
 ```bash
-npm run build     # produce dist/
-npm run preview   # serve dist/ come in produzione
-npm run lint
-npm run verifica  # calcoli + persistenza + interfaccia: 1448 controlli
+npm run build             # produce dist/
+npm run preview           # serve dist/ come in produzione
+npm run lint              # 0 errori, 0 avvisi
+npm run verifica          # calcoli + persistenza + interfaccia: 1461 controlli
+npm run verifica:completa # tutto quanto: 1628 controlli
 ```
 
-`npm run verifica` gira con Node puro, senza installare niente, e fa tre giri.
+### `npm run verifica:completa`
+
+È il comando da lanciare prima di toccare qualsiasi cosa. Mette in fila tutte
+le suite, comprese quelle che prima andavano ricordate a mano, e si ferma alla
+prima che fallisce:
+
+| suite | cosa guarda | controlli |
+|---|---|---|
+| `controlli.mjs` | i calcoli | 311 |
+| `persistenza.mjs` | che i dati non spariscano | 133 |
+| `redesign.mjs` | markup, CSS, accessibilità | 1017 |
+| `gruppi.mjs` | rete incerta e classifica | 25 |
+| `coda-utente.mjs` | code attribuite all'utente, scritture offline | 49 |
+| `annulla-lotto.mjs` | annullamento delle registrazioni arretrate | 41 |
+| `account.mjs` | eliminazione dell'account | 22 |
+| `schermate.jsx` | ogni schermata renderizzata davvero | 30 stati |
+| | **totale** | **1628** |
+
+`npm run verifica` resta quello di sempre — calcoli, persistenza, interfaccia —
+e continua a girare con Node puro senza installare niente. Le altre suite hanno
+bisogno delle dipendenze: `annulla-lotto` e `coda-utente` importano il motore di
+sincronizzazione, e `schermate` monta React per davvero, quindi passa da
+`esbuild` (che sta nelle devDependencies apposta, così il comando è
+riproducibile). Gira anche da solo con `npm run verifica:schermate`.
+
+`npm run verifica` fa tre giri.
 
 `verifica/controlli.mjs` (311) controlla i **calcoli**, sui punti dove i bug
 c'erano davvero — confini di giornata attorno al cambio d'ora, ritmo di
@@ -57,7 +83,7 @@ revisione partiva, `cancella` no, quindi una cancellazione con una revisione
 vecchia poteva portarsi via il lavoro di un altro dispositivo. Con il DELETE
 secco di prima ne fallivano **7**. Vedi `PERSISTENZA.md`.
 
-`verifica/redesign.mjs` (1004) controlla l'**interfaccia**: tag JSX e parentesi
+`verifica/redesign.mjs` (1017) controlla l'**interfaccia**: tag JSX e parentesi
 bilanciate, componenti importati davvero, import mai usati, costanti usate prima
 di essere dichiarate, ogni classe scritta nel markup esistente in `styles.css`
 (e viceversa), contrasto WCAG AA di ogni coppia testo/fondo, bersagli tattili da
@@ -91,6 +117,12 @@ public/                    icone, manifest della PWA
 supabase/migrations/       lo schema del database, versionato
 verifica/controlli.mjs     controlli sui calcoli, senza dipendenze
 verifica/redesign.mjs      controlli su markup, CSS e accessibilità
+verifica/persistenza.mjs   fusione, revisioni, cancellazioni
+verifica/gruppi.mjs        rete incerta, classifica
+verifica/coda-utente.mjs   code attribuite all'utente, scritture offline
+verifica/annulla-lotto.mjs annullamento delle arretrate
+verifica/account.mjs       eliminazione dell'account
+verifica/schermate.jsx     ogni schermata montata e renderizzata
 strumenti/genera-icone.py  rifà le icone PNG dal logo
 ```
 

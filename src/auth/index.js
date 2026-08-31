@@ -20,7 +20,6 @@ import { supabaseConfigurato } from './supabaseClient';
 const auth = supabaseConfigurato ? supabaseAuth : localAuth;
 
 if (!supabaseConfigurato) {
-  // eslint-disable-next-line no-console
   console.warn(
     '[auth] Supabase non configurato: l’app gira in modalità locale. '
     + 'Account e gruppi restano su questo dispositivo e nessun altro li vede.',
