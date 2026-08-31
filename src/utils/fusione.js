@@ -64,7 +64,31 @@ export const INSIEMI = Object.values(TIPI);
 export const CAMPI_SEMPLICI = [
   'smessoDal', 'notify', 'avvisiCorpo', 'onboarded', 'tappeViste', 'groups',
 ];
-export const MAPPE = ['profile', 'tags', 'plans'];
+/* `gruppiStato` sta fra le MAPPE e non fra i campi semplici, ed è tutta
+   la correzione: le MAPPE hanno un orologio PER CHIAVE, quindi ogni
+   codice di gruppo porta la sua versione ordinabile e l'ultima
+   operazione su QUEL gruppo vince, senza toccare gli altri.
+
+   Prima c'erano due cose diverse e incompatibili: `groups`, una lista
+   sola con un orologio solo (chi la tocca per ultimo decide tutto), e
+   `gruppiUsciti`, un'unione permanente di codici. L'unione risolveva
+   l'uscita e rompeva il rientro: una copia vecchia rimasta offline si
+   riportava dietro la lapide e la rimetteva dentro alla prima fusione,
+   buttando fuori l'utente da un gruppo in cui era appena rientrato. Una
+   lapide non si toglie: è quello che le rende adatte alle sigarette
+   cancellate e inadatte ai gruppi, da cui si esce e si rientra.
+
+   Adesso `gruppiStato[CODICE]` è semplicemente `true` (dentro) o `false`
+   (fuori), e `orologi['gruppiStato.CODICE']` è la versione. La fusione
+   per queste chiavi passa già dallo stesso `vinceY` degli altri campi:
+   più recente vince, a parità decide il dispositivo, a parità ancora
+   decide il valore — commutativa, associativa, idempotente.
+
+   `groups` e `gruppiUsciti` restano, ma come PROIEZIONI rigenerate: i
+   registri già scritti si continuano a leggere, e un'app con la versione
+   precedente che legge un registro nuovo trova le due liste coerenti con
+   lo stato vero. */
+export const MAPPE = ['profile', 'tags', 'plans', 'gruppiStato'];
 
 /* L'identità di questa copia dell'app. Serve a due cose: a rompere le
    parità fra due orologi identici in modo che le due parti arrivino
@@ -176,6 +200,69 @@ function tagsDaGrezzo(grezzo) {
   return fuori;
 }
 
+/* ------------------------------------------------------------------ */
+/*  I GRUPPI: STATO PER CODICE, E DUE PROIEZIONI                       */
+/* ------------------------------------------------------------------ */
+/* `statoGruppi` legge un registro comunque sia scritto e ne ricava la
+   mappa `{ CODICE: dentro }`:
+
+   - se ha già `gruppiStato`, quella è la verità;
+   - i codici che stanno solo in `groups` valgono `true`;
+   - i codici che stanno solo in `gruppiUsciti` valgono `false`;
+   - se un codice sta in tutte e due le liste vince l'uscita, che è
+     esattamente quello che faceva la versione precedente.
+
+   Ai codici migrati si dà come versione l'orologio della vecchia lista
+   `groups` (zero se non c'è). È giusto che sia BASSA: qualunque uscita o
+   rientro fatto dopo l'aggiornamento è più recente e vince, e un
+   registro vecchio non può annullare un'operazione nuova. */
+function statoGruppi(grezzo, d) {
+  const stato = {};
+  const sorgente = grezzo?.gruppiStato;
+  if (sorgente && typeof sorgente === 'object' && !Array.isArray(sorgente)) {
+    Object.entries(sorgente).forEach(([codice, dentro]) => {
+      if (typeof codice === 'string' && codice) stato[codice] = dentro !== false;
+    });
+  }
+
+  const quandoMigrati = Number.isFinite(d.orologi?.groups) ? d.orologi.groups : 0;
+  const migra = (lista, dentro) => {
+    (Array.isArray(lista) ? lista : []).forEach((codice) => {
+      if (typeof codice !== 'string' || !codice) return;
+      if (Object.hasOwn(stato, codice)) return;
+      stato[codice] = dentro;
+      const percorso = `gruppiStato.${codice}`;
+      if (!Number.isFinite(d.orologi[percorso])) d.orologi[percorso] = quandoMigrati;
+    });
+  };
+  // prima le uscite: se un codice sta in tutte e due le liste, vince l'uscita
+  migra(grezzo?.gruppiUsciti, false);
+  migra(grezzo?.groups, true);
+  return stato;
+}
+
+/* `groups` e `gruppiUsciti` non si scrivono più a mano: si rigenerano da
+   `gruppiStato`. `groups` tiene l'ORDINE che aveva — è quello che decide
+   quale gruppo si apre per primo — e in coda mette i codici comparsi
+   nel frattempo, in ordine alfabetico perché serve un ordine e questo è
+   uguale su tutti i dispositivi.
+
+   `gruppiUsciti` resta scritto per un motivo solo: un'app con la versione
+   precedente che legge un registro nuovo deve trovare le due liste
+   coerenti fra loro. Non viene più letto come verità. */
+function proiettaGruppi(d, ordinePreferito = null) {
+  const stato = d.gruppiStato || {};
+  const dentro = new Set(Object.keys(stato).filter((c) => stato[c]));
+  const ordine = ordinePreferito || (Array.isArray(d.groups) ? d.groups : []);
+
+  const tenuti = [];
+  ordine.forEach((c) => { if (dentro.has(c) && !tenuti.includes(c)) tenuti.push(c); });
+  [...dentro].sort().forEach((c) => { if (!tenuti.includes(c)) tenuti.push(c); });
+
+  d.groups = tenuti;
+  d.gruppiUsciti = Object.keys(stato).filter((c) => !stato[c]).sort();
+}
+
 export function normalizzaRegistro(grezzo, vuoto) {
   const base = typeof vuoto === 'function' ? vuoto() : (vuoto || {});
   const d = { ...base, ...(grezzo || {}) };
@@ -226,7 +313,22 @@ export function normalizzaRegistro(grezzo, vuoto) {
   }
   d.ripartenze = d.ripartenzeBase + d.ricadute.length;
 
+  /* LE LAPIDI DEI GRUPPI.
+
+     `groups` sta fra i campi a orologio, cioè si decide a maggioranza di
+     istante: vince la lista dell'ultimo che l'ha toccata. Va bene per
+     entrare, non per USCIRE. Chi esce da un gruppo e poi trova un altro
+     dispositivo che non lo sapeva e ha toccato la lista dopo, se lo
+     ritrova dentro — e con l'iscrizione già cancellata sul server, quindi
+     un gruppo che c'è sullo schermo e non esiste più davvero.
+
+     Le lapidi si UNISCONO, come quelle delle sigarette (`rimossi`): una
+     volta uscito, il codice resta fuori qualunque sia l'ordine delle
+     fusioni. Rientrare toglie la lapide, che è l'unico modo per poterci
+     rientrare davvero. */
   d.orologi = { ...(grezzo?.orologi || {}) };
+  d.gruppiStato = statoGruppi(grezzo, d);
+  proiettaGruppi(d);
   d.dispositivo = typeof grezzo?.dispositivo === 'string' ? grezzo.dispositivo : ID_DISPOSITIVO;
   d.rev = Number.isFinite(grezzo?.rev) ? grezzo.rev : 0;
   d.v = VERSIONE_REGISTRO;
@@ -311,17 +413,40 @@ export function fondiRegistri(a, b, vuoto) {
   // --- 2. i campi a orologio, uno per uno ---
   const orologio = (d, p) => (Number.isFinite(d.orologi?.[p]) ? d.orologi[p] : 0);
   /* A parità di orologio decide l'identificativo del dispositivo: non
-     conta QUALE vinca, conta che le due parti scelgano lo stesso. */
+     conta QUALE vinca, conta che le due parti scelgano lo stesso.
+
+     Ma i due dispositivi possono essere lo STESSO, e allora questo
+     confronto pareggiava e vinceva x — cioè vinceva il primo argomento,
+     cioè l'esito dipendeva dall'ordine in cui si chiamava la funzione.
+     Fondere locale con remoto dava un risultato, fondere remoto con
+     locale ne dava un altro, e l'intestazione di questo blocco promette
+     che la fusione è commutativa.
+
+     Non è un caso di laboratorio: `ID_DISPOSITIVO` si rigenera a ogni
+     caricamento della pagina, quindi la copia sul dispositivo e la riga
+     sul database possono benissimo portare lo stesso timbro — è la stessa
+     scheda che le ha scritte entrambe — e due modifiche nello stesso
+     millisecondo bastano a far pareggiare anche l'orologio.
+
+     L'ultimo spareggio è il VALORE stesso, confrontato come testo: è
+     l'unica cosa che le due parti guardano allo stesso modo qualunque sia
+     l'ordine degli argomenti. Non conta quale dei due vinca; conta che
+     vinca sempre lo stesso. */
+  const comeTesto = (v) => JSON.stringify(v === undefined ? null : v);
   const vinceY = (p) => {
     const ox = orologio(x, p);
     const oy = orologio(y, p);
     if (oy !== ox) return oy > ox;
-    return String(y.dispositivo) > String(x.dispositivo);
+    const dx = String(x.dispositivo);
+    const dy = String(y.dispositivo);
+    if (dy !== dx) return dy > dx;
+    return comeTesto(leggi(y, p)) > comeTesto(leggi(x, p));
   };
 
   out.tags = { ...x.tags };
   out.plans = { ...x.plans };
   out.profile = { ...x.profile };
+  out.gruppiStato = { ...x.gruppiStato };
   new Set([...percorsiSemplici(x), ...percorsiSemplici(y)]).forEach((p) => {
     const inX = esiste(x, p);
     const inY = esiste(y, p);
@@ -330,6 +455,13 @@ export function fondiRegistri(a, b, vuoto) {
     if (inY && (!inX || vinceY(p))) scriviIn(out, p, leggi(y, p));
     else if (inX) scriviIn(out, p, leggi(x, p));
   });
+
+  /* `groups` è appena passato per il ciclo a orologio qui sopra, dove può
+     aver vinto la lista di chi non sapeva di un'uscita o di un rientro.
+     La verità è `gruppiStato`, che il ciclo ha appena fuso codice per
+     codice: le due liste si rigenerano da lì, tenendo l'ordine che
+     avevano — è quello che decide quale gruppo si apre per primo. */
+  proiettaGruppi(out, [...(x.groups || []), ...(y.groups || [])]);
 
   // le etichette degli eventi che non ci sono più
   const vivi = new Set(out.eventi.map((e) => e.id));

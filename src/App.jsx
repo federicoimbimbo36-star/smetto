@@ -14,6 +14,7 @@ import {
 } from './utils/fusione';
 import auth from './auth';
 import { eliminaAccount } from './utils/account';
+import { creaSequenza, caricaSessione } from './utils/sessione';
 import {
   distribuisci, tappeDaRiavviare, togliLotto, costruisciLotto,
 } from './utils/arretrate';
@@ -53,6 +54,8 @@ const vuotoLog = () => ({
   eventi: [],
   cigs: [], resists: [], checkins: [], ricadute: [],
   rimossi: [],                       // lapidi: identificativi, non istanti
+  gruppiStato: {},                   // per ogni codice: dentro o fuori, con la sua versione
+  gruppiUsciti: [],                  // proiezione di gruppiStato, per le versioni precedenti
   tags: {},                          // indicizzate per identificativo
   groups: [], notify: true, avvisiCorpo: true, onboarded: false,
   profile: { motivo: '', baseline: null, prezzoPacchetto: null, perPacchetto: 20, sesso: 'non_detto' },
@@ -141,6 +144,36 @@ export default function App() {
   /* copia sempre aggiornata di `dati`, per il codice asincrono (sync) che
      gira fuori dal render e non può fidarsi della closure con cui è nato */
   const datiRef = useRef(null);
+  /* L'identificativo di chi è dentro, leggibile da dentro un ascoltatore
+     che è stato agganciato una volta sola e quindi non vedrebbe mai lo
+     stato aggiornato. */
+  const userRef = useRef(null);
+  useEffect(() => { userRef.current = user.id || null; }, [user.id]);
+
+  /* IL TOKEN DELLA SESSIONE.
+
+     Caricare un account non è un'operazione sola: `getSession`, poi
+     `loadLog`, che a sua volta legge il disco e interroga il database.
+     Fra un'attesa e l'altra la sessione può cambiare — logout da un'altra
+     scheda, accesso con un altro account — e il caricamento vecchio
+     arrivava comunque in fondo e chiamava `setIsAuthenticated(true)`
+     ripopolando i dati di chi era appena uscito.
+
+     Il flag `active` che c'era prima copre solo lo smontaggio del
+     componente, cioè un caso che in pratica non succede mai: l'app resta
+     montata e cambia la sessione sotto.
+
+     Qui ogni sequenza asincrona prende un numero PRIMA di partire e lo
+     ricontrolla dopo ogni `await`, subito prima di toccare lo stato. Il
+     numero sale a ogni logout, a ogni cambio di account e in
+     `resetAuthState`: da quel momento tutto ciò che era in volo è
+     scaduto e si ritira senza scrivere niente. */
+  /* Una ref, non una variabile: `useRef` la regola dei hook la riconosce
+     come stabile, mentre un oggetto tirato fuori con `.current` durante il
+     render le sembra una dipendenza reattiva e la farebbe chiedere negli
+     elenchi di dipendenze di effetti che devono girare una volta sola. */
+  const sequenzaRef = useRef(null);
+  if (!sequenzaRef.current) sequenzaRef.current = creaSequenza();
 
   function showToast(msg) {
     setToast(msg);
@@ -153,6 +186,10 @@ export default function App() {
   }), [user.id, user.nickname, user.name, user.avatarColor]);
 
   function applyProfile(u) {
+    /* La ref si aggiorna QUI e non solo nell'effetto su `user.id`: quello
+       gira dopo il render, e i controlli dopo un `await` devono poter
+       leggere chi c'è adesso, non chi c'era all'ultimo render. */
+    userRef.current = u.id || null;
     setUser((prev) => ({
       ...prev, id: u.id, name: u.display_name || prev.name, nickname: u.nickname || '',
       email: u.email || '', phone: u.phone || '', avatarColor: u.avatar_color || PALETTE[0],
@@ -168,7 +205,30 @@ export default function App() {
      della distribuzione delle arretrate: due sigarette non possono
      condividere lo stesso millisecondo, perché su quel millisecondo sono
      indicizzate le etichette del registro. */
-  async function loadLog(uid) {
+  /* ------------------------------------------------------------------ */
+  /*  IL REGISTRO SI PREPARA PRIMA E SI APPLICA DOPO                     */
+  /*                                                                     */
+  /*  Erano due cose in una funzione sola, e la seconda arrivava troppo  */
+  /*  tardi. `loadLog` leggeva il disco, normalizzava, interrogava il    */
+  /*  database dei gruppi — tre attese — e lungo la strada scriveva:     */
+  /*  `visti`, `setGruppi`, `setGruppoAttivo`, `datiRef`, `setDati`, e   */
+  /*  faceva pure partire o spegnere le notifiche di sistema.            */
+  /*                                                                     */
+  /*  Il gettone della sessione lo controllava `caricaSessione` DOPO,    */
+  /*  quindi impediva di dichiarare autenticato l'account sbagliato ma   */
+  /*  non impediva niente di tutto il resto: A partiva lento, B entrava  */
+  /*  e finiva, e poi A arrivava e scriveva il registro di A sopra la    */
+  /*  schermata di B. L'utente in alto diceva B, i numeri erano di A.    */
+  /*                                                                     */
+  /*  Adesso `preparaLog` LEGGE E BASTA: mette insieme tutto quello che  */
+  /*  servirà e lo restituisce, senza toccare niente. `applicaLog` fa    */
+  /*  le scritture, tutte insieme, in un colpo solo e senza attese in    */
+  /*  mezzo — e `caricaSessione` la chiama solo dopo aver verificato     */
+  /*  gettone e utente. Fra il controllo e le scritture non c'è nessun   */
+  /*  `await`, quindi non c'è nessun momento in cui la sessione possa    */
+  /*  cambiare a metà.                                                   */
+  /* ------------------------------------------------------------------ */
+  async function preparaLog(uid) {
     const d = await readStore(logKey(uid), vuotoLog());
     /* Una funzione sola, e sta in utils/fusione.js: la ripulitura del
        registro serviva già qui, ma adesso serve anche allo strato di
@@ -178,15 +238,12 @@ export default function App() {
     const merged = normalizzaRegistro(d, vuotoLog);
     // migrazione dalle versioni con un gruppo solo
     if (!merged.groups?.length && d?.group) merged.groups = [d.group];
-    visti.current = await readStore(seenKey(uid), {});
+    const vistiLetti = await readStore(seenKey(uid), {});
 
     // I gruppi arrivano dal database, non dalla lista salvata sul dispositivo:
     // così un telefono nuovo li ritrova da solo senza reinserire i codici, e
     // quelli sciolti nel frattempo spariscono invece di restare appesi.
-    // ATTENZIONE: solo se il database c'è davvero. In modalità locale
-    // groups.mine() torna [] per forza, e prendere quel [] per buono
-    // cancellava la lista dei gruppi salvata sul dispositivo.
-    /* ATTENZIONE, e adesso per due motivi. Il primo: in modalità locale
+    /* ATTENZIONE, e per due motivi. Il primo: in modalità locale
        `mine()` torna vuoto per forza, e prendere quel vuoto per buono
        cancellava la lista salvata sul dispositivo. Il secondo, trovato
        dall'audit: anche col database configurato la lettura può
@@ -195,18 +252,39 @@ export default function App() {
        senza rete faceva sparire i gruppi per tutta la sessione, e da
        quel momento `salva()` non pubblicava più niente perché la lista
        era vuota. Adesso una lettura fallita non tocca niente: resta
-       quella salvata, e il prossimo sync riuscito la aggiorna. */
-    if (groups.disponibile()) {
+       quella salvata, e il prossimo sync riuscito la aggiorna.
+
+       `gruppiVivi` a `null` vuol dire proprio quello: non si è potuto
+       leggere, quindi non si tocca la lista. */
+    const gruppiLetti = groups.disponibile();
+    let gruppiVivi = null;
+    if (gruppiLetti) {
       const esito = await groups.mine();
       if (esito.ok) {
-        const vivi = esito.gruppi.map((g) => g.code);
-        merged.groups = vivi;
-        setGruppi(esito.gruppi);
+        gruppiVivi = esito.gruppi;
+        merged.groups = esito.gruppi.map((g) => g.code);
+      }
+    }
+
+    return { uid, merged, visti: vistiLetti, gruppiVivi, gruppiLetti };
+  }
+
+  function applicaLog(preparato) {
+    if (!preparato) return null;
+    const { merged, visti: vistiLetti, gruppiVivi, gruppiLetti } = preparato;
+
+    visti.current = vistiLetti;
+
+    if (gruppiLetti) {
+      if (gruppiVivi) {
+        const vivi = gruppiVivi.map((g) => g.code);
+        setGruppi(gruppiVivi);
         setGruppoAttivo((prev) => (vivi.includes(prev) ? prev : vivi[0] || null));
       } else {
         setGruppoAttivo((prev) => (merged.groups?.includes(prev) ? prev : merged.groups?.[0] || null));
       }
     }
+
     /* `datiRef` PRIMA di `setDati`: il riferimento è quello che `salva()`
        legge come «com'era prima» per timbrare i campi cambiati, e lo
        useEffect che lo allinea gira solo dopo il render. Una modifica
@@ -228,23 +306,22 @@ export default function App() {
     return merged;
   }
 
+
   useEffect(() => {
-    let active = true;
-    auth.getSession().then(async (session) => {
-      if (session?.user && active) {
-        applyProfile(session.user);
-        await loadLog(session.user.id);
-        setIsAuthenticated(true);
-      }
-      if (active) setSessionChecked(true);
-    }).catch((e) => {
+    caricaSessione(sequenzaRef.current, {
+      leggiSessione: () => auth.getSession(),
+      applicaProfilo: applyProfile,
+      preparaRegistro: preparaLog,
+      applicaRegistro: applicaLog,
+      utenteAdesso: () => userRef.current,
+      autentica: () => setIsAuthenticated(true),
+      finito: () => setSessionChecked(true),
       // Se qualcosa va storto qui (rete assente, backend irraggiungibile)
       // NON si può lasciare l'app ferma su "Verifica sessione…": meglio
       // mostrare la schermata di accesso e far riprovare.
-      console.error('controllo della sessione non riuscito', e);
-      if (active) setSessionChecked(true);
+      errore: (e) => console.error('controllo della sessione non riuscito', e),
     });
-    return () => { active = false; };
+    return () => { sequenzaRef.current.brucia(); };
   }, []);
 
   useEffect(() => {
@@ -277,6 +354,60 @@ export default function App() {
   /*  ricarica e basta, perché ricaricare vorrebbe dire buttare via       */
   /*  quello che ha in memoria e che magari l'altra non ha ancora visto.  */
   /* ------------------------------------------------------------------ */
+  /* ------------------------------------------------------------------ */
+  /*  LA SESSIONE PUÒ CAMBIARE DA UN'ALTRA PARTE                         */
+  /*                                                                     */
+  /*  La sessione si leggeva UNA VOLTA SOLA, all'avvio, e da lì in poi   */
+  /*  questa scheda dava per scontato di sapere chi c'è. Ma la sessione  */
+  /*  è condivisa fra le schede dello stesso browser e fra i dispositivi */
+  /*  dello stesso account: uscire in una scheda, o entrare con un altro */
+  /*  account, lasciava le altre a mostrare i dati di prima — con i      */
+  /*  pulsanti che continuavano a funzionare, e le scritture che il      */
+  /*  motore di sincronizzazione poteva solo mettere in coda perché la   */
+  /*  chiave non era più di chi era entrato.                             */
+  /*                                                                     */
+  /*  Qui la scheda se ne accorge. Se la sessione se n'è andata torna    */
+  /*  alla schermata di accesso, con lo stesso `resetAuthState` del      */
+  /*  logout — quindi niente dati del vecchio account rimasti a schermo. */
+  /*  Se è entrato QUALCUN ALTRO si riparte da capo con i suoi dati.     */
+  /*  In nessuno dei due casi si tocca il database: qui si sistema solo  */
+  /*  quello che l'utente ha davanti.                                    */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    if (!auth.onAuthChange) return undefined;
+    let vivo = true;
+    const stacca = auth.onAuthChange(async (idOra) => {
+      if (!vivo) return;
+      const idPrima = userRef.current;
+      if (idOra === idPrima) return;          // rinnovo del token: non è successo niente
+
+      if (!idOra) { resetAuthState(); return; }
+      if (!idPrima) return;                   // l'accesso da questa scheda lo gestisce già chi l'ha fatto
+
+      /* È ENTRATO UN ALTRO ACCOUNT: via tutto e si ricarica il suo.
+
+         `resetAuthState` brucia il gettone, quindi il caricamento di
+         prima — se è ancora in volo — da qui in poi è scaduto e non potrà
+         più rendere autenticato nessuno. Poi se ne prende uno nuovo per
+         questo caricamento, che a sua volta può essere sorpassato se
+         nel frattempo cambia ancora qualcosa. */
+      resetAuthState();
+      await caricaSessione(sequenzaRef.current, {
+        leggiSessione: async () => {
+          const sessione = await auth.getSession();
+          // se nel frattempo è cambiato ancora, questa non è la sessione attesa
+          return sessione?.user?.id === idOra ? sessione : null;
+        },
+        applicaProfilo: applyProfile,
+        preparaRegistro: preparaLog,
+        applicaRegistro: applicaLog,
+        utenteAdesso: () => userRef.current,
+        autentica: () => { if (vivo) setIsAuthenticated(true); },
+      });
+    });
+    return () => { vivo = false; if (typeof stacca === 'function') stacca(); };
+  }, []);
+
   useEffect(() => {
     if (!user.id) return undefined;
     const mia = logKey(user.id);
@@ -488,9 +619,40 @@ export default function App() {
           : 'Numero di telefono o password non corretti.');
         return;
       }
-      applyProfile(res.user);
-      await loadLog(res.user.id);
-      setIsAuthenticated(true);
+      /* ANCHE L'ACCESSO FATTO QUI PASSA DALLA SEQUENZA PROTETTA.
+
+         Qui c'era scritto che il login da questa scheda non può cambiare
+         sessione durante il caricamento. Non è vero: il cambio arriva da
+         un'ALTRA scheda, e questa non se ne accorge. A fa l'accesso, il
+         suo caricamento è lento, nel frattempo l'altra scheda entra come
+         B, B finisce, e poi A arriva e riscrive profilo, dati e
+         autenticazione di A sopra la schermata di B.
+
+         La sequenza si brucia prima di aprirne una nuova, così qualunque
+         caricamento partito prima è già superato. E la sessione si
+         RILEGGE invece di fidarsi di `res.user`: fra la risposta di
+         `signIn` e la fine del caricamento può essere cambiata, e se
+         quella vera non è più di chi ha appena fatto l'accesso non si
+         applica niente. */
+      sequenzaRef.current.brucia();
+      const atteso = res.user.id;
+      const esito = await caricaSessione(sequenzaRef.current, {
+        leggiSessione: async () => {
+          const sessione = await auth.getSession();
+          return sessione?.user?.id === atteso ? sessione : null;
+        },
+        applicaProfilo: applyProfile,
+        preparaRegistro: preparaLog,
+        applicaRegistro: applicaLog,
+        utenteAdesso: () => userRef.current,
+        autentica: () => setIsAuthenticated(true),
+      });
+
+      /* Il benvenuto, la scheda iniziale e la pulizia delle password solo
+         se si è entrati davvero. Una sequenza superata si ritira in
+         silenzio: dire «Bentornato» a chi nel frattempo è diventato un
+         altro utente sarebbe l'ultima cosa rimasta di questo difetto. */
+      if (esito !== 'entrato') return;
       setActiveTab('oggi');
       showToast(authMode === 'signup' ? 'Account creato. Si comincia 🎯' : 'Bentornato 👋');
       setAuthPassword(''); setAuthConfirmPassword('');
@@ -602,7 +764,19 @@ export default function App() {
     setPwFields({ current: '', next: '', confirm: '' });
     setNicknameDraft(''); setOtpModal(false); setRiparti(null); setTappaBanner(null);
     setNonLetti(0); setUltimoSync(null);
+    /* LE REF PER PRIME, e in modo sincrono. Lo stato React si aggiorna al
+       prossimo render; le ref no, e sono proprio loro che leggono le
+       operazioni ancora in volo. Lasciare `datiRef` pieno significava che
+       un salvataggio partito prima del logout trovava ancora il registro
+       dell'account uscito e lo riscriveva.
+
+       Il gettone sale per ultimo ma è la riga che conta: da qui in poi
+       ogni sequenza asincrona iniziata prima si accorge di essere scaduta
+       e si ferma senza toccare niente. */
     visti.current = {};
+    datiRef.current = null;
+    userRef.current = null;
+    sequenzaRef.current.brucia();
   }
 
   function handleResetLog() {
@@ -714,7 +888,15 @@ export default function App() {
     const code = codiceInput.trim().toUpperCase();
     const res = await groups.join(code, meCard);
     if (res.error) { setJoinError('Non è stato possibile unirsi al gruppo.'); return; }
-    const next = { ...dati, groups: [...(dati.groups || []), code] };
+    /* Il rientro è un'OPERAZIONE con la sua versione, non la cancellazione
+       di una lapide: `salva` timbra `gruppiStato.<codice>` con l'istante,
+       quindi una copia vecchia rimasta offline con l'uscita di prima non
+       può più rimettere fuori chi è appena rientrato. */
+    const next = {
+      ...dati,
+      groups: [...(dati.groups || []), code],
+      gruppiStato: { ...(dati.gruppiStato || {}), [code]: true },
+    };
     setGruppi((prev) => [...prev.filter((g) => g.code !== code), res.group]);
     setGruppoAttivo(code);
     salva(next);
@@ -731,9 +913,35 @@ export default function App() {
       body: 'Sparisci dalla sua classifica e i membri non ricevono più i tuoi aggiornamenti. Il tuo storico personale e gli altri gruppi restano.',
       confirmLabel: 'Esci dal gruppo', danger: true,
       onConfirm: async () => {
-        await groups.leave(code, user.id);
+        /* SE IL SERVER DICE DI NO, QUI NON SUCCEDE NIENTE.
+
+           Prima l'esito di `leave` veniva buttato via: la riga si toglieva
+           dallo schermo e il messaggio diceva «sei uscito» anche quando la
+           cancellazione non era arrivata. Il gruppo spariva dal telefono e
+           l'iscrizione restava sul database, quindi si continuava a comparire
+           nella classifica degli altri senza più poterci fare niente —
+           l'unico stato da cui l'utente non aveva modo di uscire.
+
+           `join` questo controllo ce l'aveva già; era l'uscita a non
+           averlo. In modalità locale `leave` torna `{}`, quindi il
+           comportamento senza database non cambia. */
+        const esito = await groups.leave(code, user.id);
+        if (esito?.error) {
+          setConfirmModal(null);
+          showToast('Non è stato possibile uscire dal gruppo. Riprova.');
+          return;
+        }
         const rimasti = (dati.groups || []).filter((c) => c !== code);
-        salva({ ...dati, groups: rimasti });
+        /* Togliere il codice dalla lista non basta: `groups` si fonde a
+           orologio, quindi un altro dispositivo che non sa dell'uscita e
+           tocca la lista dopo di noi vince, e il gruppo ritorna. L'uscita
+           si registra su `gruppiStato.<codice>`, che ha un orologio suo:
+           vale finché non arriva un rientro più recente. */
+        salva({
+          ...dati,
+          groups: rimasti,
+          gruppiStato: { ...(dati.gruppiStato || {}), [code]: false },
+        });
         setGruppi((prev) => prev.filter((g) => g.code !== code));
         setMembriPerGruppo((prev) => { const n = { ...prev }; delete n[code]; return n; });
         setGruppoAttivo(rimasti[0] || null);

@@ -59,6 +59,25 @@ const supabaseAuth = {
     return { user: { ...profile, id: data.session.user.id } };
   },
 
+  /* CHI ENTRA E CHI ESCE, ANCHE DA UN'ALTRA SCHEDA.
+
+     La sessione Supabase sta in localStorage ed è condivisa fra tutte le
+     schede dello stesso browser: uscire in una le fa uscire tutte, ma solo
+     la scheda che ha premuto il pulsante se ne accorgeva. Le altre
+     restavano a mostrare i dati di un account da cui l'utente era già
+     uscito — su un telefono o un computer condiviso, sotto gli occhi di
+     chi entra dopo.
+
+     `onAuthStateChange` lo dice; mancava solo qualcuno che ascoltasse.
+     Passa `null` quando la sessione se ne va, l'identificativo quando
+     cambia. Restituisce la funzione per staccarsi. */
+  onAuthChange(fn) {
+    const { data } = supabase.auth.onAuthStateChange((_evento, sessione) => {
+      fn(sessione?.user?.id || null);
+    });
+    return () => { try { data?.subscription?.unsubscribe?.(); } catch { /* già staccato */ } };
+  },
+
   async signUp(phone, password) {
     const { data, error } = await supabase.auth.signUp({
       email: phoneToTechnicalEmail(phone),

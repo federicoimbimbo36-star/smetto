@@ -326,6 +326,22 @@ export function creaKvSincronizzato({
       const uid = await remoto.utente();
       if (!uid) return copia;
 
+      /* SI LEGGE SOLO QUELLO CHE È PROPRIO.
+
+         `set` e `delete` questo controllo ce l'hanno; la lettura no. E la
+         lettura è peggio, perché non si limita a leggere: FONDE il risultato
+         nella copia locale e la riscrive. Con la sessione già passata a B e
+         la chiave ancora di A — la chiave la compone lo stato dell'app,
+         `uid` arriva dalla sessione, e le due cose non cambiano nello stesso
+         istante — si interrogava il database per la riga `(B, chiave-di-A)`,
+         e quello che tornava (o non tornava) finiva fuso dentro il registro
+         di A sul dispositivo.
+
+         Chi non è il proprietario si tiene la copia locale e non tocca né
+         la rete né il disco. */
+      const proprietario = uidDaChiave(key);
+      if (proprietario && proprietario !== uid) return copia;
+
       /* La promise si materializza UNA VOLTA e poi si riusa: i query
          builder sono thenable pigri, e chiamare .then() due volte manda
          due richieste. Qui serve sia alla gara col timeout sia al ramo
@@ -344,6 +360,12 @@ export function creaKvSincronizzato({
            aveva davanti trenta secondi prima. */
         lettura.then(async (r) => {
           if (!r || r.error || !r.data) return;
+          /* Questa risposta è nata prima, e nel frattempo può essere
+             cambiato l'account: scriverla adesso vorrebbe dire fondere i
+             dati letti con la sessione di prima dentro la copia di chi c'è
+             adesso. Se non è più lui, la risposta si lascia cadere. */
+          const oraDentro = await remoto.utente();
+          if (oraDentro !== uid) return;
           const adesso = await locale.get(key);
           const fuso = fondi(key, analizza(adesso?.value), r.data.value);
           revNota.set(key, r.data.rev ?? 0);

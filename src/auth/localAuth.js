@@ -1,5 +1,5 @@
-import { AUTH_KEY, PALETTE, logKey } from '../constants';
-import { readStore, writeStore } from '../utils/storage';
+import { AUTH_KEY, PALETTE, logKey } from '../constants.js';
+import { readStore, writeStore } from '../utils/storage.js';
 
 const vuotoAuth = { users: {}, byPhone: {}, session: null };
 
@@ -62,6 +62,21 @@ const localAuth = {
     const db = await readStore(AUTH_KEY, vuotoAuth);
     if (!db.session || !db.users[db.session]) return null;
     return { user: { id: db.session, ...db.users[db.session].profile } };
+  },
+
+  /* La stessa forma di `supabaseAuth.onAuthChange`, perché App.jsx non
+     debba sapere quale dei due backend sta usando. Qui la sessione è una
+     riga in localStorage, quindi l'avviso arriva dall'evento `storage`,
+     che il browser manda alle ALTRE schede. */
+  onAuthChange(fn) {
+    if (typeof window === 'undefined' || !window.addEventListener) return () => {};
+    const ascolta = async (e) => {
+      if (e?.key && !e.key.includes(AUTH_KEY)) return;
+      const db = await readStore(AUTH_KEY, vuotoAuth);
+      fn(db.session && db.users[db.session] ? db.session : null);
+    };
+    window.addEventListener('storage', ascolta);
+    return () => window.removeEventListener('storage', ascolta);
   },
   async signUp(phone, password) {
     const db = await readStore(AUTH_KEY, vuotoAuth);
