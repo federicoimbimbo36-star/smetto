@@ -1,6 +1,7 @@
 /* estensione esplicita: così questo file si può importare anche da Node
    "nudo", che è quello che fa verifica/controlli.mjs senza installare nulla */
 import { addGiorni, maxTs } from './format.js';
+import { idsAggiunti } from './fusione.js';
 
 /* ------------------------------------------------------------------ */
 /*  SIGARETTE ARRETRATE                                                */
@@ -150,6 +151,32 @@ export function tappeDaRiavviare(cigsEsistenti, nuovi) {
 /*  ricostruire da soli — `start` e `tappeViste` — e nemmeno quelli     */
 /*  alla cieca.                                                         */
 /* ------------------------------------------------------------------ */
+/* IL LOTTO SI COSTRUISCE QUI, non dentro App.jsx, per la ragione di
+   sempre: `togliLotto` qui sotto si fida ciecamente di `lotto.ids`, e
+   quella lista va verificata, non guardata. Finché la costruzione stava
+   in App.jsx il banco di prova se la ricopiava — difetto compreso — e
+   quindi non poteva accorgersi di niente.
+
+   `ids` sono gli eventi REALMENTE aggiunti, riconosciuti per
+   identificativo. La ricaduta, se il lotto ne ha prodotta una, è uno di
+   quelli e va seppellita insieme alle sigarette che l'hanno causata:
+   `ripartenze` si conta come `ripartenzeBase + ricadute.length`, quindi
+   lasciarne indietro una vorrebbe dire una ripartenza che non è mai
+   successa.
+
+   `quante` invece resta il numero di SIGARETTE, perché è quello che la
+   card scrive a schermo. */
+export function costruisciLotto(prima, dopo, { ts, quando, riavvio }) {
+  return {
+    ids: idsAggiunti(prima, dopo),
+    ts,
+    quante: ts.length,
+    quando,
+    riavvio,
+    prima,
+  };
+}
+
 export function togliLotto(dati, lotto, rimuovi) {
   let next = dati;
   (lotto?.ids || []).forEach((id) => { next = rimuovi(next, id); });

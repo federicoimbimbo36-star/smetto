@@ -9,9 +9,10 @@ valore teoricamente corretto, su scenari costruiti apposta. Tutti i numeri
 Esito dell'analisi: **64 algoritmi controllati, 35 corretti, 5 problemi critici,
 9 importanti, 17 minori.** Questo documento è il registro delle correzioni.
 
-Verifica: `npm run verifica` — 311 controlli sui calcoli e 56 sulla persistenza
-(scritti per fallire con il codice di prima) più 1.001 su markup, CSS e
-accessibilità. L'audit della persistenza sta in `PERSISTENZA.md`.
+Verifica: `npm run verifica` — 311 controlli sui calcoli e 133 sulla persistenza
+(scritti per fallire con il codice di prima) più 1.004 su markup, CSS e
+accessibilità. L'audit della persistenza e dell'identità degli eventi sta in
+`PERSISTENZA.md`.
 
 Il livello basso era già solido e non è stato toccato nella sostanza: date,
 cambio d'ora nelle chiavi della classifica, anno bisestile, `ymd`/`daYmd` su

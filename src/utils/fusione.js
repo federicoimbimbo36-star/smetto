@@ -1,58 +1,61 @@
 /* ------------------------------------------------------------------ */
-/*  LA FUSIONE DEI REGISTRI                                            */
+/*  IDENTITÀ DEGLI EVENTI E FUSIONE DEI REGISTRI                       */
 /*                                                                     */
-/*  Questo file esiste per una frase sola:                             */
+/*  Due frasi, e la seconda è arrivata dopo:                           */
 /*                                                                     */
-/*    UNA SIGARETTA REGISTRATA NON PUÒ SPARIRE.                        */
+/*    1. UNA SIGARETTA REGISTRATA NON PUÒ SPARIRE.                     */
+/*    2. L'IDENTITÀ DI UN EVENTO NON È IL MOMENTO IN CUI È SUCCESSO.   */
 /*                                                                     */
-/*  Prima non era vero, e non per un caso limite esotico. Il registro   */
-/*  è un unico oggetto JSON scritto per intero a ogni modifica, e chi   */
-/*  scriveva per ultimo cancellava l'altro. Due telefoni con lo stesso  */
-/*  account, cento sigarette a testa, una registrata su ciascuno:       */
-/*  risultato 101, non 102. Stessa cosa con due schede del browser, e   */
-/*  stessa cosa fra la copia locale e quella remota dopo un periodo     */
-/*  offline.                                                            */
+/*  La prima l'ha risolta la fusione: unione degli insiemi, lapidi per  */
+/*  le cancellazioni, orologio per campo sui valori singoli.            */
 /*                                                                     */
-/*  La correzione NON è «scrivere più in fretta» né «prendere sempre il  */
-/*  più recente»: è smettere di scegliere fra due versioni e FONDERLE.  */
+/*  La seconda era ancora aperta, e non per un caso di laboratorio.     */
+/*  L'identità di una sigaretta era il suo millisecondo, e due          */
+/*  millisecondi uguali facevano UNA sigaretta sola. Non «raramente»:   */
 /*                                                                     */
-/*  Il registro si divide in due nature, e ognuna ha la sua regola:     */
+/*   · `distribuisci` è una funzione PURA di (quante, finestra). Due    */
+/*     dispositivi che segnano «ieri, 10 sigarette» producono dieci     */
+/*     istanti IDENTICI AL MILLISECONDO — verificato, non stimato.      */
+/*     Non è una collisione da una su ottantasei milioni: è certa.      */
+/*   · un orologio spostato indietro (fuso orario, correzione manuale)  */
+/*     restituisce millisecondi già usati, e la sigaretta nuova veniva  */
+/*     ingoiata dal `Set` senza un errore, senza un avviso, senza       */
+/*     niente.                                                          */
+/*   · `tags` era indicizzato per istante, quindi due sigarette allo    */
+/*     stesso millisecondo condividevano il motivo.                     */
+/*   · e cancellarne una cancellava anche l'altra, sull'altro           */
+/*     dispositivo, dopo la fusione.                                    */
 /*                                                                     */
-/*  1. GLI INSIEMI DI ISTANTI — sigarette, voglie superate, check-in,   */
-/*     ricadute. Sono insiemi di millisecondi, e un millisecondo è già  */
-/*     l'identità dell'evento (su quello sono indicizzate le etichette  */
-/*     del registro). Si fondono con l'UNIONE, meno le cancellazioni:   */
-/*     è un 2P-Set, cioè commutativo, associativo e idempotente. Da qui */
-/*     discende tutto quello che serve: due dispositivi non si perdono  */
-/*     niente, i tentativi ripetuti non duplicano, e l'ordine in cui le */
-/*     sincronizzazioni arrivano non cambia il risultato finale.        */
+/*  Un'identità deve essere univoca PER COSTRUZIONE, non per            */
+/*  probabilità. Quindi adesso ogni evento è { id, ts }:                */
 /*                                                                     */
-/*     Le cancellazioni sono LAPIDI (`rimossi`), non semplici assenze.  */
-/*     Senza lapidi l'unione farebbe risorgere ogni sigaretta tolta dal */
-/*     registro alla prima sincronizzazione con l'altro dispositivo.    */
+/*    ts  →  QUANDO è successo   (lo usa tutta la matematica, D1–D13)   */
+/*    id  →  QUALE evento è      (lo usa solo l'identità: fusione,      */
+/*                                cancellazioni, etichette)             */
 /*                                                                     */
-/*  2. I CAMPI SINGOLI — prezzo, ritmo, motivo, se–allora, etichette.   */
-/*     Qui l'unione non vuol dire niente: un prezzo o è 6,00 o è 6,50.  */
-/*     Vince il più recente, CAMPO PER CAMPO, con un orologio proprio   */
-/*     per ciascuno. Non un orologio solo per tutto il registro: con    */
-/*     quello, cambiare il prezzo su un telefono avrebbe cancellato il  */
-/*     motivo scritto sull'altro cinque minuti prima.                   */
+/*  Le due cose sono indipendenti. Due eventi possono avere lo stesso   */
+/*  `ts` e restare due; lo stesso evento ritrasmesso dieci volte resta  */
+/*  uno, perché ha lo stesso `id`.                                      */
 /*                                                                     */
-/*  Tre eccezioni volute, tutte nella stessa direzione — non perdere:   */
-/*    · `start` prende il MINIMO: il percorso comincia dalla prima      */
-/*      sigaretta conosciuta, e scoprirne una più vecchia non deve      */
-/*      accorciarlo;                                                    */
-/*    · `ripartenzeBase` prende il MASSIMO: è un contatore che sale;    */
-/*    · un campo che esiste da una parte sola vince, qualunque cosa     */
-/*      dicano gli orologi. `null` invece è un valore, non un'assenza:  */
-/*      «sono tornato in riduzione» scrive `smessoDal: null` e deve     */
-/*      poter vincere sul valore precedente.                            */
+/*  ------------------------------------------------------------------ */
+/*  PERCHÉ `cigs` È ANCORA UN ARRAY DI NUMERI                          */
+/*                                                                     */
+/*  Perché tutta la matematica — 311 controlli — lavora su array di     */
+/*  millisecondi, e riscriverla per farle digerire degli oggetti        */
+/*  avrebbe voluto dire rimettere in discussione un motore verificato   */
+/*  per risolvere un problema che non è suo. `eventi` è la verità;      */
+/*  `cigs`, `resists`, `checkins` e `ricadute` sono PROIEZIONI generate */
+/*  da `normalizzaRegistro`. La sola differenza per chi le consuma è    */
+/*  che adesso possono contenere due volte lo stesso numero — ed è      */
+/*  esattamente quello che deve succedere quando due eventi diversi     */
+/*  cadono nello stesso millisecondo.                                   */
 /* ------------------------------------------------------------------ */
 
-export const VERSIONE_REGISTRO = 8;
+export const VERSIONE_REGISTRO = 9;
 
-/* Gli insiemi di istanti, e la lapide che li accompagna. */
-export const INSIEMI = ['cigs', 'resists', 'checkins', 'ricadute'];
+/* I tipi di evento, e la proiezione che ciascuno alimenta. */
+export const TIPI = { cig: 'cigs', resist: 'resists', checkin: 'checkins', ricaduta: 'ricadute' };
+export const INSIEMI = Object.values(TIPI);
 
 /* I campi a orologio: quelli per cui «vince il più recente» ha senso.
    `profile`, `tags` e `plans` sono mappe e si trattano CHIAVE PER CHIAVE,
@@ -63,64 +66,157 @@ export const CAMPI_SEMPLICI = [
 ];
 export const MAPPE = ['profile', 'tags', 'plans'];
 
-/* L'identità di questa copia dell'app. Serve solo a rompere le parità
-   fra due orologi identici in modo che le due parti arrivino ALLO STESSO
-   risultato: senza, un pareggio verrebbe risolto in due modi diversi sui
-   due dispositivi e non convergerebbero mai. Vive in memoria: cambia a
-   ogni avvio, e va benissimo, perché ogni registro si porta dietro
-   quello di chi l'ha scritto. */
+/* L'identità di questa copia dell'app. Serve a due cose: a rompere le
+   parità fra due orologi identici in modo che le due parti arrivino
+   ALLO STESSO risultato, e a comporre gli identificativi degli eventi
+   quando `crypto.randomUUID` non c'è. Vive in memoria: cambia a ogni
+   avvio, e va bene, perché ogni registro si porta dietro quello di chi
+   l'ha scritto. */
 export const ID_DISPOSITIVO = `d${Math.random().toString(36).slice(2, 10)}`;
 
-const soloIstanti = (lista) => (Array.isArray(lista) ? lista : [])
-  .filter((t) => Number.isFinite(t) && t > 0);
+/* ------------------------------------------------------------------ */
+/*  GLI IDENTIFICATIVI                                                 */
+/* ------------------------------------------------------------------ */
+/* `crypto.randomUUID` quando c'è — è nel browser da anni, in Node da
+   sempre e in Capacitor per forza. Il ripiego non è «quasi unico»: è
+   dispositivo + contatore monotono + caso. Il contatore garantisce che
+   la stessa copia dell'app non possa MAI riusare un identificativo,
+   nemmeno chiamando la funzione mille volte nello stesso millisecondo;
+   il dispositivo separa le copie diverse. */
+let contatore = 0;
+export function nuovoId() {
+  contatore += 1;
+  const c = (typeof globalThis !== 'undefined' && globalThis.crypto) || null;
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID();
+  return `${ID_DISPOSITIVO}-${contatore.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
-const insieme = (lista) => new Set(soloIstanti(lista));
+/* L'identificativo dei registri VECCHI, quelli in cui gli eventi erano
+   solo millisecondi. È DERIVATO dal millisecondo, quindi due dispositivi
+   che migrano lo stesso registro arrivano agli stessi identificativi e la
+   fusione non raddoppia tutto quanto. È la proprietà che rende la
+   migrazione sicura: se fosse casuale, la prima sincronizzazione dopo
+   l'aggiornamento avrebbe prodotto due copie di ogni sigaretta mai
+   registrata. */
+export const idStorico = (tipo, ts) => `s:${tipo}:${ts}`;
 
-const ordinati = (set) => [...set].sort((a, b) => a - b);
+export const eventoNuovo = (tipo, ts, id) => ({ id: id || nuovoId(), tipo, ts });
 
 /* ------------------------------------------------------------------ */
-/*  NORMALIZZAZIONE                                                    */
+/*  NORMALIZZAZIONE E MIGRAZIONE                                       */
 /* ------------------------------------------------------------------ */
-/* Un registro che arriva da fuori — dal dispositivo, dal database, un
-   domani da un backup JSON reimportato — può essere di una versione
-   precedente o semplicemente sporco. Qui prende la forma su cui la
-   fusione sa ragionare, e i valori che l'aritmetica sa digerire.
+const numeroBuono = (t) => Number.isFinite(t) && t > 0;
 
-   `ripartenze` era un contatore scalare, e un contatore scalare non si
-   fonde: due dispositivi che ricadono nello stesso giorno, sommati con
-   «vince il più recente», perdono una ricaduta. Adesso le ricadute sono
-   l'INSIEME degli istanti in cui sono avvenute — si fondono come tutto
-   il resto — e il numero è la loro conta. `ripartenzeBase` porta avanti
-   quello che c'era prima della migrazione, senza inventarsi istanti che
-   nessuno ha registrato. */
+function eventiDaGrezzo(grezzo) {
+  const fuori = [];
+  const visti = new Set();
+
+  const aggiungi = (tipo, id, ts) => {
+    if (!numeroBuono(ts) || typeof id !== 'string' || !id) return;
+    if (visti.has(id)) return;          // stesso evento ritrasmesso: uno solo
+    visti.add(id);
+    fuori.push({ id, tipo, ts });
+  };
+
+  /* SE C'È `eventi`, QUELLA È LA VERITÀ, e le liste di millisecondi sono
+     solo la sua proiezione: rileggerle sarebbe contare due volte ogni
+     sigaretta. Le liste si migrano soltanto quando `eventi` non c'è
+     proprio, cioè quando il registro arriva da una versione precedente. */
+  if (Array.isArray(grezzo?.eventi)) {
+    grezzo.eventi.forEach((e) => { if (e && TIPI[e.tipo]) aggiungi(e.tipo, e.id, e.ts); });
+    return fuori;
+  }
+
+  /* Formato vecchio. L'identificativo è DERIVATO dal millisecondo, così
+     due dispositivi che migrano lo stesso registro arrivano agli stessi
+     identificativi e la fusione non raddoppia tutto: se fosse casuale, la
+     prima sincronizzazione dopo l'aggiornamento avrebbe prodotto due
+     copie di ogni sigaretta mai registrata. */
+  Object.entries(TIPI).forEach(([tipo, nome]) => {
+    (Array.isArray(grezzo?.[nome]) ? grezzo[nome] : []).forEach((t) => {
+      if (numeroBuono(t)) aggiungi(tipo, idStorico(tipo, t), t);
+    });
+  });
+
+  return fuori;
+}
+
+function lapidiDaGrezzo(grezzo) {
+  const fuori = new Set();
+  const rim = grezzo?.rimossi;
+
+  // formato nuovo: un elenco piatto di identificativi
+  if (Array.isArray(rim)) rim.forEach((id) => { if (typeof id === 'string' && id) fuori.add(id); });
+
+  /* Formato vecchio: { cigs: [ts], resists: [ts], … }. Si traducono negli
+     identificativi storici, cioè esattamente quelli che la migrazione qui
+     sopra assegna alle stesse sigarette. Senza questa riga, tutto quello
+     che era stato cancellato prima dell'aggiornamento sarebbe tornato
+     indietro al primo riallineamento. */
+  if (rim && !Array.isArray(rim)) {
+    Object.entries(TIPI).forEach(([tipo, nome]) => {
+      (Array.isArray(rim[nome]) ? rim[nome] : []).forEach((t) => {
+        if (numeroBuono(t)) fuori.add(idStorico(tipo, t));
+      });
+    });
+  }
+  return fuori;
+}
+
+/* Le etichette erano indicizzate per istante e adesso lo sono per
+   identificativo. Le vecchie si traducono con la stessa regola della
+   migrazione, quindi restano attaccate alla loro sigaretta. */
+function tagsDaGrezzo(grezzo) {
+  const fuori = {};
+  Object.entries(grezzo?.tags || {}).forEach(([k, v]) => {
+    if (typeof v !== 'string' || !v) return;
+    const numerico = Number(k);
+    fuori[numeroBuono(numerico) ? idStorico('cig', numerico) : k] = v;
+  });
+  return fuori;
+}
+
 export function normalizzaRegistro(grezzo, vuoto) {
   const base = typeof vuoto === 'function' ? vuoto() : (vuoto || {});
   const d = { ...base, ...(grezzo || {}) };
 
   d.profile = { ...(base.profile || {}), ...(grezzo?.profile || {}) };
-  d.tags = { ...(grezzo?.tags || {}) };
   d.plans = { ...(grezzo?.plans || {}) };
+  d.tags = tagsDaGrezzo(grezzo);
 
-  INSIEMI.forEach((nome) => { d[nome] = ordinati(insieme(d[nome])); });
+  const lapidi = lapidiDaGrezzo(grezzo);
+  d.rimossi = [...lapidi].sort();
 
-  const rim = grezzo?.rimossi || {};
-  d.rimossi = {};
-  INSIEMI.forEach((nome) => { d.rimossi[nome] = ordinati(insieme(rim[nome])); });
+  /* Le lapidi vincono sempre sugli eventi: se un identificativo compare
+     in tutti e due, è stato cancellato dopo essere stato registrato. */
+  d.eventi = eventiDaGrezzo(grezzo)
+    .filter((e) => !lapidi.has(e.id))
+    .sort((a, b) => (a.ts - b.ts) || (a.id < b.id ? -1 : 1));
 
-  /* Le lapidi vincono sempre sulle liste: se un istante compare in tutte
-     e due, è stato cancellato dopo essere stato registrato. */
-  INSIEMI.forEach((nome) => {
-    const lapidi = new Set(d.rimossi[nome]);
-    d[nome] = d[nome].filter((t) => !lapidi.has(t));
-  });
+  /* LE PROIEZIONI. Array di millisecondi, come li vuole la matematica,
+     e con i doppioni quando due eventi distinti cadono nello stesso
+     istante — che è il punto di tutto questo file. */
+  INSIEMI.forEach((nome) => { d[nome] = []; });
+  d.eventi.forEach((e) => d[TIPI[e.tipo]].push(e.ts));
 
-  if (!Number.isFinite(d.start) || d.start <= 0) d.start = d.cigs[0] ?? null;
-  if (!Number.isFinite(d.smessoDal) || d.smessoDal <= 0) d.smessoDal = null;
+  // le etichette delle sigarette cancellate non servono più a nessuno
+  const vivi = new Set(d.eventi.map((e) => e.id));
+  Object.keys(d.tags).forEach((id) => { if (!vivi.has(id)) delete d.tags[id]; });
 
-  /* Migrazione del contatore scalare. Si guarda `grezzo` e non `d`,
-     perché `d` ha già ereditato lo zero del registro vuoto e quel
-     controllo non sarebbe mai scattato: il contatore delle versioni
-     precedenti sarebbe finito nel cestino alla prima apertura. */
+  /* L'INIZIO DEL PERCORSO NON PUÒ ESSERE DOPO LA PRIMA SIGARETTA.
+     `intervalliCoperti` scarta gli eventi precedenti a `start`, quindi un
+     registro con `start` più recente della sigaretta più vecchia aveva
+     eventi invisibili alla copertura: registrati, contati nei totali, e
+     ignorati dal tempo contato. La fusione lo correggeva già; qui lo fa
+     anche l'apertura, così l'invariante vale sempre e non solo dopo una
+     sincronizzazione. */
+  if (!numeroBuono(d.start)) d.start = d.cigs[0] ?? null;
+  else if (d.cigs.length) d.start = Math.min(d.start, d.cigs[0]);
+  if (!numeroBuono(d.smessoDal)) d.smessoDal = null;
+
+  /* Il contatore scalare delle ripartenze delle versioni ancora
+     precedenti. Si guarda `grezzo` e non `d`, perché `d` ha già ereditato
+     lo zero del registro vuoto. */
   if (Number.isFinite(grezzo?.ripartenzeBase)) {
     d.ripartenzeBase = Math.max(0, Math.round(grezzo.ripartenzeBase));
   } else if (Number.isFinite(grezzo?.ripartenze) && !Array.isArray(grezzo?.ricadute)) {
@@ -142,10 +238,10 @@ export function normalizzaRegistro(grezzo, vuoto) {
 /* ------------------------------------------------------------------ */
 /*  GLI OROLOGI                                                        */
 /* ------------------------------------------------------------------ */
-/* `salva()` chiama questa funzione a ogni modifica: confronta il prima e
-   il dopo e timbra SOLO i campi che sono davvero cambiati. Timbrare
-   tutto a ogni salvataggio equivarrebbe a un orologio unico, cioè a
-   rimettere in piedi il problema che questi orologi risolvono. */
+/* `salva()` chiama `timbra` a ogni modifica: confronta il prima e il dopo
+   e timbra SOLO i campi che sono davvero cambiati. Timbrare tutto a ogni
+   salvataggio equivarrebbe a un orologio unico, cioè a rimettere in piedi
+   il problema che questi orologi risolvono. */
 export function percorsiSemplici(d) {
   const p = [...CAMPI_SEMPLICI];
   MAPPE.forEach((mappa) => {
@@ -155,15 +251,23 @@ export function percorsiSemplici(d) {
 }
 
 const leggi = (d, percorso) => {
-  const [testa, coda] = percorso.split('.');
-  if (coda === undefined) return d?.[testa];
-  return d?.[testa]?.[coda];
+  const i = percorso.indexOf('.');
+  if (i === -1) return d?.[percorso];
+  return d?.[percorso.slice(0, i)]?.[percorso.slice(i + 1)];
 };
 
 const esiste = (d, percorso) => {
-  const [testa, coda] = percorso.split('.');
-  if (coda === undefined) return d ? Object.hasOwn(d, testa) : false;
-  return d?.[testa] ? Object.hasOwn(d[testa], coda) : false;
+  const i = percorso.indexOf('.');
+  if (i === -1) return d ? Object.hasOwn(d, percorso) : false;
+  const testa = d?.[percorso.slice(0, i)];
+  return testa ? Object.hasOwn(testa, percorso.slice(i + 1)) : false;
+};
+
+const scriviIn = (out, percorso, valore) => {
+  const i = percorso.indexOf('.');
+  if (i === -1) { out[percorso] = valore; return; }
+  const testa = percorso.slice(0, i);
+  out[testa] = { ...out[testa], [percorso.slice(i + 1)]: valore };
 };
 
 const uguali = (a, b) => (a === b) || JSON.stringify(a) === JSON.stringify(b);
@@ -180,12 +284,11 @@ export function timbra(prima, dopo, adesso = Date.now()) {
 /* ------------------------------------------------------------------ */
 /*  LA FUSIONE                                                         */
 /* ------------------------------------------------------------------ */
-/* Commutativa, associativa, idempotente: fondere A con B dà lo stesso
-   risultato di fondere B con A, fonderli in qualunque ordine dà lo
-   stesso risultato, e rifondere due volte non cambia niente. È questo —
-   e non i tentativi ripetuti fatti bene — che rende impossibile perdere
-   una sigaretta per colpa dell'ordine con cui le sincronizzazioni
-   arrivano. */
+/* Commutativa, associativa, idempotente. Adesso l'unione è sugli
+   IDENTIFICATIVI e non più sugli istanti, quindi due eventi diversi che
+   cadono nello stesso millisecondo restano due, e lo stesso evento
+   ritrasmesso resta uno. Prima le due cose non si potevano distinguere,
+   perché erano la stessa cosa. */
 export function fondiRegistri(a, b, vuoto) {
   if (!a) return b ? normalizzaRegistro(b, vuoto) : null;
   if (!b) return normalizzaRegistro(a, vuoto);
@@ -194,12 +297,16 @@ export function fondiRegistri(a, b, vuoto) {
   const y = normalizzaRegistro(b, vuoto);
   const out = { ...x };
 
-  // --- 1. gli insiemi: unione meno le lapidi ---
-  INSIEMI.forEach((nome) => {
-    const lapidi = new Set([...x.rimossi[nome], ...y.rimossi[nome]]);
-    out.rimossi[nome] = ordinati(lapidi);
-    out[nome] = ordinati(new Set([...x[nome], ...y[nome]])).filter((t) => !lapidi.has(t));
-  });
+  // --- 1. gli eventi: unione per identificativo, meno le lapidi ---
+  const lapidi = new Set([...x.rimossi, ...y.rimossi]);
+  const perId = new Map();
+  [...x.eventi, ...y.eventi].forEach((e) => { if (!perId.has(e.id)) perId.set(e.id, e); });
+  lapidi.forEach((id) => perId.delete(id));
+
+  out.rimossi = [...lapidi].sort();
+  out.eventi = [...perId.values()].sort((p, q) => (p.ts - q.ts) || (p.id < q.id ? -1 : 1));
+  INSIEMI.forEach((nome) => { out[nome] = []; });
+  out.eventi.forEach((e) => out[TIPI[e.tipo]].push(e.ts));
 
   // --- 2. i campi a orologio, uno per uno ---
   const orologio = (d, p) => (Number.isFinite(d.orologi?.[p]) ? d.orologi[p] : 0);
@@ -212,47 +319,112 @@ export function fondiRegistri(a, b, vuoto) {
     return String(y.dispositivo) > String(x.dispositivo);
   };
 
-  const scrivi = (percorso, valore) => {
-    const [testa, coda] = percorso.split('.');
-    if (coda === undefined) out[testa] = valore;
-    else out[testa] = { ...out[testa], [coda]: valore };
-  };
-
-  const percorsi = new Set([...percorsiSemplici(x), ...percorsiSemplici(y)]);
   out.tags = { ...x.tags };
   out.plans = { ...x.plans };
   out.profile = { ...x.profile };
-  percorsi.forEach((p) => {
+  new Set([...percorsiSemplici(x), ...percorsiSemplici(y)]).forEach((p) => {
     const inX = esiste(x, p);
     const inY = esiste(y, p);
     // un campo che esiste da una parte sola non può essere cancellato
     // dall'assenza dell'altra: l'assenza non è una decisione
-    if (inY && (!inX || vinceY(p))) scrivi(p, leggi(y, p));
-    else if (inX) scrivi(p, leggi(x, p));
+    if (inY && (!inX || vinceY(p))) scriviIn(out, p, leggi(y, p));
+    else if (inX) scriviIn(out, p, leggi(x, p));
   });
+
+  // le etichette degli eventi che non ci sono più
+  const vivi = new Set(out.eventi.map((e) => e.id));
+  Object.keys(out.tags).forEach((id) => { if (!vivi.has(id)) delete out.tags[id]; });
 
   out.orologi = { ...x.orologi };
   Object.entries(y.orologi || {}).forEach(([p, t]) => {
     if (!Number.isFinite(out.orologi[p]) || t > out.orologi[p]) out.orologi[p] = t;
   });
 
-  // --- 3. le tre eccezioni ---
-  const inizi = [x.start, y.start].filter((t) => Number.isFinite(t) && t > 0);
+  /* --- 3. le tre eccezioni, tutte nella direzione «non perdere» ---
+     `start` prende il minimo: scoprire una sigaretta più vecchia non deve
+     accorciare il percorso. `ripartenzeBase` prende il massimo: è un
+     contatore che sale. */
+  const inizi = [x.start, y.start].filter(numeroBuono);
   out.start = inizi.length ? Math.min(...inizi) : null;
-  out.ripartenzeBase = Math.max(x.ripartenzeBase || 0, y.ripartenzeBase || 0);
-
-  /* Il percorso non può cominciare dopo la prima sigaretta conosciuta:
-     dopo l'unione possono essere comparse sigarette più vecchie di
-     entrambi gli `start`. */
   if (out.cigs.length) {
     out.start = out.start === null ? out.cigs[0] : Math.min(out.start, out.cigs[0]);
   }
-
+  out.ripartenzeBase = Math.max(x.ripartenzeBase || 0, y.ripartenzeBase || 0);
   out.ripartenze = out.ripartenzeBase + out.ricadute.length;
+
   out.dispositivo = ID_DISPOSITIVO;
   out.rev = Math.max(x.rev || 0, y.rev || 0);
   out.v = VERSIONE_REGISTRO;
   return out;
+}
+
+/* ------------------------------------------------------------------ */
+/*  LE OPERAZIONI SUGLI EVENTI                                         */
+/* ------------------------------------------------------------------ */
+/* Aggiunge l'evento E tiene ordinate le proiezioni. L'ordine conta:
+   `start` si legge come `cigs[0]`, il record scorre le pause fra una
+   sigaretta e la successiva, il registro si mostra dal più recente. Prima
+   le sigarette segnate in ritardo finivano in fondo alla lista con un
+   istante di ieri, e la sistemava solo la normalizzazione al caricamento
+   successivo — cioè tutto funzionava fino al primo che si fidava
+   dell'ordine senza riordinare. */
+export function aggiungiEvento(d, tipo, ts, id) {
+  const e = eventoNuovo(tipo, ts, id);
+  const eventi = [...(d.eventi || []), e].sort((p, q) => (p.ts - q.ts) || (p.id < q.id ? -1 : 1));
+  const proiezione = [...(d[TIPI[tipo]] || []), ts].sort((p, q) => p - q);
+  return { ...d, eventi, [TIPI[tipo]]: proiezione };
+}
+
+export function aggiungiEventi(d, tipo, istanti) {
+  let out = d;
+  istanti.forEach((ts) => { out = aggiungiEvento(out, tipo, ts); });
+  return out;
+}
+
+/* GLI IDENTIFICATIVI DI QUELLO CHE È STATO APPENA AGGIUNTO.
+
+   Sembra una comodità e invece è la stessa regola di `rimuoviEvento` qui
+   sotto, applicata al verso opposto: un evento si riconosce dal suo
+   IDENTIFICATIVO, mai dalla sua posizione nella lista.
+
+   Chi chiamava `aggiungiEventi` e poi leggeva `next.eventi.slice(quanti
+   ce n'erano prima)` dava per scontato che i nuovi finissero in fondo. Non
+   ci finiscono: `aggiungiEvento` RIORDINA per istante, apposta, perché
+   `start` si legge come `cigs[0]` e il registro si mostra dal più recente.
+   Segnare tre sigarette di ieri le mette in mezzo, e lo `slice` restituiva
+   gli ultimi tre per istante — cioè le sigarette di OGGI. Chi poi toccava
+   «Annulla» se le vedeva seppellire, con la lapide, quindi senza ritorno
+   né dal database né dall'altro telefono.
+
+   Vale anche per una sola: `eventi[eventi.length - 1]` non è la sigaretta
+   appena registrata se sul dispositivo ne è già arrivata una con lo stesso
+   millisecondo — che è precisamente lo scenario obbligatorio di questo
+   file, non un caso di laboratorio. */
+export function idsAggiunti(prima, dopo) {
+  const gia = new Set((prima?.eventi || []).map((e) => e.id));
+  return (dopo?.eventi || []).filter((e) => !gia.has(e.id)).map((e) => e.id);
+}
+
+/* Cancellare per IDENTIFICATIVO, non per istante. È il punto del test
+   obbligatorio: A registra X, B registra Y, X e Y hanno lo stesso
+   millisecondo, A cancella X — Y deve restare. Cancellando per istante,
+   la lapide colpiva tutti e due. */
+export function rimuoviEvento(d, id) {
+  const eventi = (d.eventi || []).filter((e) => e.id !== id);
+  const rimossi = [...new Set([...(d.rimossi || []), id])].sort();
+  const tags = { ...(d.tags || {}) };
+  delete tags[id];
+  const out = { ...d, eventi, rimossi, tags };
+  INSIEMI.forEach((nome) => { out[nome] = []; });
+  eventi.forEach((e) => out[TIPI[e.tipo]].push(e.ts));
+  return out;
+}
+
+/* Azzerare lo storico deve SEPPELLIRE quello che c'era, non svuotare la
+   lista: senza lapidi, il primo riallineamento col database — o con
+   l'altro telefono — rimetterebbe dentro tutto. */
+export function seppellisciTutto(d) {
+  return [...new Set([...(d.rimossi || []), ...(d.eventi || []).map((e) => e.id)])].sort();
 }
 
 /* ------------------------------------------------------------------ */
@@ -281,27 +453,4 @@ export function fondiValore(chiave, locale, remoto) {
   if (String(chiave).startsWith('smetto:log:')) return fondiRegistri(locale, remoto);
   if (String(chiave).startsWith('smetto:seen:')) return fondiVisti(locale, remoto);
   return locale;
-}
-
-/* Le lapidi: togliere un istante da un insieme NON è filtrare la lista.
-   `handleElimina` filtrava e basta, e alla prima sincronizzazione con
-   l'altro dispositivo la sigaretta tolta tornava — perché l'unione non
-   sa distinguere «non ce l'ho» da «l'ho cancellata». */
-export function rimuoviIstante(d, nome, ts) {
-  const lista = (d[nome] || []).filter((t) => t !== ts);
-  const rimossi = { ...(d.rimossi || {}) };
-  rimossi[nome] = [...new Set([...(rimossi[nome] || []), ts])].sort((a, b) => a - b);
-  return { ...d, [nome]: lista, rimossi };
-}
-
-/* Azzerare lo storico deve seppellire quello che c'era, non svuotare la
-   lista: senza lapidi, il primo `mine()` dell'altro dispositivo — o la
-   prima lettura dal database — rimetterebbe dentro tutto. */
-export function seppellisciTutto(d) {
-  const rimossi = { ...(d.rimossi || {}) };
-  INSIEMI.forEach((nome) => {
-    rimossi[nome] = [...new Set([...(rimossi[nome] || []), ...(d[nome] || [])])]
-      .sort((a, b) => a - b);
-  });
-  return rimossi;
 }

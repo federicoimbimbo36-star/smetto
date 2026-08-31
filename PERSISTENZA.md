@@ -10,8 +10,9 @@ poterlo far girare contro un database finto che fa i dispetti veri —
 risponde in ritardo, non risponde affatto, risponde quando ormai qualcun
 altro ha scritto. Tutti i numeri «prima» qui sotto vengono da esecuzioni.
 
-Verifica: `npm run verifica` → 56 controlli di persistenza. Con il codice
-di prima ne fallivano **15**.
+Verifica: `npm run verifica` → 133 controlli di persistenza. Con il codice
+di prima ne fallivano **15** sulla sincronizzazione, **19** sull'identità
+degli eventi e **7** sulla cancellazione.
 
 ---
 
@@ -254,3 +255,215 @@ zero a ogni scrittura, quindi vale ancora il limite noto sui fusi orari.
 stesse condizioni di quello vero (`where rev = <attesa>`), ma resta un
 finto. Prima di fidarsi serve la prova in due persone su due telefoni, che
 è già il punto uno della lista dei prossimi passi.
+
+---
+
+# Seconda parte: l'identità degli eventi
+
+La prima parte ha reso impossibile perdere una sigaretta per colpa della
+rete. Restava aperta una domanda che sembrava teorica e non lo era: **che
+cosa identifica una sigaretta?**
+
+La risposta era: il suo millisecondo. Sbagliata.
+
+## Il problema è reale, e in un caso è certo
+
+`distribuisci` è una funzione **pura** di (quante, finestra). Due
+dispositivi che segnano «ieri, 10 sigarette» producono dieci istanti
+identici al millisecondo. Verificato, non stimato:
+
+```
+A: [1787985900000, 1787991300000, 1787996700000, …]
+B: [1787985900000, 1787991300000, 1787996700000, …]
+identiche? true
+```
+
+Non è una collisione da una su ottantasei milioni. È **certa**, e succede
+alla prima persona che segna lo stesso arretrato su due dispositivi.
+
+Il secondo caso è più banale e più frequente: un **orologio spostato
+indietro** — fuso orario, correzione manuale, sincronizzazione NTP — fa
+restituire a `Date.now()` millisecondi già usati.
+
+## Cosa succedeva
+
+Non un doppione. Una sigaretta **in meno**, ingoiata dall'unione senza un
+errore, senza un avviso, senza niente:
+
+```
+due registrazioni nello stesso millisecondo  →  ne sopravvive 1
+due dispositivi, stesso millisecondo, fusi   →  1 + 1 = 1
+```
+
+E tre conseguenze a cascata:
+
+- **i motivi si scambiavano.** `tags` era indicizzato per istante, quindi
+  due sigarette allo stesso millisecondo condividevano l'etichetta;
+- **cancellarne una ne cancellava due.** La lapide era l'istante: A
+  elimina la sua sigaretta delle 12:30:00.000, e dopo la sincronizzazione
+  sparisce anche quella che B aveva registrato nello stesso millisecondo.
+  È il test obbligatorio, e falliva: **restava zero invece di uno**;
+- **l'esportazione CSV** scriveva una riga sola per due sigarette.
+
+## La soluzione
+
+```
+evento = { id, tipo, ts }
+```
+
+`id` da `crypto.randomUUID()` — c'è nel browser, in Node e in Capacitor.
+Il ripiego non è «quasi unico»: è dispositivo + **contatore monotono** +
+caso, quindi la stessa copia dell'app non può riusare un identificativo
+nemmeno chiamando la funzione mille volte nello stesso millisecondo.
+
+`ts` resta il tempo vero e non si tocca: **tutta la matematica D1–D13
+continua a leggere l'istante**, non l'identificativo.
+
+**`cigs` è ancora un array di numeri.** Non per pigrizia: riscrivere il
+motore matematico — 311 controlli — per fargli digerire degli oggetti
+avrebbe voluto dire rimettere in discussione codice verificato per
+risolvere un problema che non è suo. `eventi` è la verità, le liste sono
+proiezioni. L'unica differenza per chi le consuma è che possono contenere
+due volte lo stesso numero, che è il punto.
+
+## La migrazione
+
+L'identificativo dei registri vecchi è **derivato dal millisecondo**:
+`s:cig:1800000000000`.
+
+È la proprietà che rende la migrazione sicura. Se fosse casuale, due
+dispositivi che aggiornano l'app produrrebbero identificativi diversi per
+le stesse sigarette, e la prima sincronizzazione avrebbe creato **due
+copie di ogni sigaretta mai registrata**. Con l'identificativo derivato,
+i due dispositivi arrivano allo stesso risultato senza essersi parlati.
+
+Migrano anche le etichette (`tags[ts]` → `tags[s:cig:ts]`) e le lapidi
+vecchie, altrimenti tutto quello che era stato cancellato prima
+dell'aggiornamento sarebbe tornato indietro.
+
+**Un limite dichiarato:** la migrazione è sicura fra due dispositivi che
+hanno **entrambi** il codice nuovo. Un dispositivo fermo alla versione
+precedente che scrive sullo stesso account mentre un altro è aggiornato
+può produrre doppioni, perché scrive liste di istanti che il nuovo codice
+non può distinguere da proiezioni. Non è una possibilità teorica da
+risolvere con altro codice: è una cosa da non fare. Con zero utenti oggi è
+gratis evitarla; quando ci saranno utenti veri, l'aggiornamento va fatto su
+tutti i dispositivi prima di usarne due insieme.
+
+## Un bug vero, trovato da questi controlli
+
+Non era nell'identità. Lo strato di sincronizzazione, quando trovava sul
+database la sigaretta dell'altro dispositivo, la fondeva e scriveva il
+risultato — ma **l'app in memoria restava com'era**. Il salvataggio
+successivo partiva da lì, la revisione era aggiornata quindi la scrittura
+passava senza fondere niente, e la sigaretta dell'altro spariva dal
+database.
+
+Non è un caso di laboratorio: succede ogni volta che uno registra
+qualcosa offline e poi, rientrato, cancella o modifica qualcosa. Ora
+`set` avvisa quando ha dovuto fondere, e l'app rifonde il suo stato — lo
+stesso meccanismo che già serviva per le due schede.
+
+## Un'altra invariante, scoperta di rimbalzo
+
+`start ≤ min(cigs)`. `intervalliCoperti` scarta gli eventi precedenti a
+`start`, quindi un registro con `start` più recente della sigaretta più
+vecchia aveva eventi registrati, contati nei totali e **invisibili alla
+copertura**. La fusione lo correggeva già; adesso lo fa anche
+l'apertura.
+
+## Cosa cambia per chi usa l'app
+
+Una cosa sola, e va detta: **due lotti arretrati identici su due
+dispositivi adesso fanno venti sigarette, non dieci.** Prima si fondevano
+in dieci, e sembrava più intelligente — ma era un caso, non una decisione:
+si fondevano perché il sistema non sapeva distinguere «lo stesso evento
+due volte» da «due eventi uguali». Venti è la risposta onesta: sono state
+registrate venti volte.
+
+---
+
+# Terza parte: la cancellazione, e la chiusura
+
+Restava un buco, e sta tutto in una asimmetria: **`aggiorna` dichiarava da
+quale revisione partiva, `cancella` no.**
+
+```js
+// prima
+cancella: (uid, key) => supabase
+  .from('user_kv').delete().eq('user_id', uid).eq('key', key)
+```
+
+Un DELETE secco. La scrittura era protetta dal controllo di concorrenza; la
+cancellazione, che distrugge di più, non lo era:
+
+```
+A legge la revisione 10
+B modifica il registro          → revisione 11
+A cancella, convinta di essere alla 10
+→ spariva anche il lavoro di B, che A non aveva mai visto
+```
+
+Riprodotto: nello scenario B la riga finiva a `null` e le due sigarette
+diventavano **zero**.
+
+## Il difetto è reale, ma oggi non è raggiungibile
+
+Va detto, perché la differenza conta.
+
+Con Supabase configurato — cioè in produzione — eliminare l'account passa
+dalla funzione `delete_me` sul database e dalla cascata delle chiavi
+esterne, non da questo ramo. Senza Supabase, `window.storage` è la sola
+copia locale e non c'è nessun remoto da cancellare. **Nessun utente poteva
+incontrare questo bug**, perché nessun percorso dell'app arriva lì.
+
+Si corregge lo stesso, per tre ragioni: `delete` è un metodo pubblico dello
+strato di storage; la coda offline può trasportarlo (ci finisce ogni
+cancellazione fallita); e la prossima funzione che ne avesse bisogno
+l'avrebbe usato così com'era. Un'arma carica lasciata sul tavolo.
+
+## La correzione
+
+La cancellazione dichiara la revisione come tutto il resto. Se qualcuno ha
+scritto nel frattempo, la riga non viene toccata e la cancellazione viene
+**abbandonata** — non ritentata contro la revisione nuova.
+
+Questo è il punto su cui vale la pena essere espliciti, perché è una
+decisione e non un dettaglio: ritentare contro la revisione nuova sarebbe
+stato di nuovo un delete cieco, solo più lento. È volutamente diverso dal
+ramo della scrittura, dove si fonde: due modifiche si sommano, mentre
+«cancella tutto» e «aggiungi una sigaretta» non si sommano, si
+contraddicono. Fra le due vince quella che non perde dati.
+
+L'operazione risulta comunque **conclusa**, altrimenti la coda la
+ritenterebbe ogni venti secondi per sempre. Il dispositivo viene avvisato e
+alla prima lettura si riprende quello che c'è, invece di restare vuoto dopo
+aver buttato via la copia locale.
+
+## Le due cancellazioni non sono la stessa cosa
+
+Una confusione facile, che vale la pena mettere per iscritto:
+
+- **cancellare un evento** (togliere una sigaretta dal registro) → lapide
+  sull'identificativo, viaggia con i dati, si fonde. Era già a posto.
+- **cancellare la chiave** (togliere l'intera riga dal database) → è
+  un'operazione di riga, non ha lapide, e nessun altro dispositivo può
+  sapere che è successa. È quella che adesso è condizionata alla
+  revisione.
+
+Gli scenari D–H della richiesta riguardavano quasi tutti la prima, ed
+erano già verdi; il buco era nella seconda.
+
+## Le lapidi reggono
+
+Il percorso completo — A registra X, B lo riceve, A cancella X, B va
+offline, registra altro, si riavvia, torna online e si sincronizza — è
+adesso un controllo esplicito. X non ricompare: né dopo il rientro, né su
+un dispositivo appena installato, né dopo venti rifusioni in ordine misto.
+
+## La fase è chiusa
+
+Delete protetto, offline protetto, lapidi protette, multi-dispositivo
+protetto, identità dell'evento protetta. Quello che resta aperto è nella
+lista qui sopra e non si risolve con altro codice: si risolve provando
+l'app su due telefoni veri.

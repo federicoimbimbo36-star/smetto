@@ -45,7 +45,7 @@ function eroeDa(grezzo) {
 }
 
 export default function OggiScreen({
-  nome, s, conti, now, giorniPercorso, ultimoTs, gruppi, tappaBanner, onChiudiBanner,
+  nome, s, conti, now, giorniPercorso, ultimoId, ultimoTs, gruppi, tappaBanner, onChiudiBanner,
   checkedIn, lotto, onFuma, onUmore, onTante, onAnnullaLotto, onVediRegistro,
   onAnnulla, onTag, onSkipTag, onVaiAlPercorso,
   rif, prossimaTappa, copertoOra, inAstinenza, onCheckin,
@@ -184,7 +184,7 @@ export default function OggiScreen({
             </button>
           </div>
         </div>
-      ) : ultimoTs ? (
+      ) : ultimoId ? (
         <div className="card stacco">
           <div className="intestazione">
             <h2 className="titolo-sezione">Cos'era?</h2>
@@ -195,7 +195,7 @@ export default function OggiScreen({
           </p>
           <div className="pastiglie">
             {TRIGGER.map((t) => (
-              <button key={t} className="pastiglia" onClick={() => onTag(ultimoTs, t)}>{t}</button>
+              <button key={t} className="pastiglia" onClick={() => onTag(ultimoId, t)}>{t}</button>
             ))}
             <button className="pastiglia" onClick={onSkipTag}>non lo so</button>
           </div>
@@ -215,9 +215,9 @@ export default function OggiScreen({
         </div>
       )}
 
-      {inStop && !ultimoTs && <FaseStop ms={senza} />}
+      {inStop && !ultimoId && <FaseStop ms={senza} />}
 
-      {prossimaTappa && !ultimoTs && (
+      {prossimaTappa && !ultimoId && (
         <button className="card card-tocco stacco" onClick={onVaiAlPercorso}>
           <div className="card-riga">
             <span className="banner-icona banner-icona-tenue"><Check size={16} /></span>
@@ -236,7 +236,7 @@ export default function OggiScreen({
           conti corrono solo sul tempo che qualcuno ha certificato: il
           silenzio non è uno zero, e due giorni senza dire niente non sono
           due giorni senza fumare. Basta un tocco per ripartire. */}
-      {conti && !copertoOra && !inAstinenza && !ultimoTs && (
+      {conti && !copertoOra && !inAstinenza && !ultimoId && (
         <div className="card stacco">
           <div className="card-riga">
             <span className="banner-icona banner-icona-tenue"><Check size={16} /></span>
@@ -257,7 +257,7 @@ export default function OggiScreen({
         </div>
       )}
 
-      {conti && conti.risparmioAnno != null && conti.risparmioAnno > 0 && !ultimoTs && (
+      {conti && conti.risparmioAnno != null && conti.risparmioAnno > 0 && !ultimoId && (
         <p className="nota" style={{ textAlign: 'center', marginTop: 32 }}>
           Di questo passo, in un anno: {eur0(conti.risparmioAnno)}.
         </p>

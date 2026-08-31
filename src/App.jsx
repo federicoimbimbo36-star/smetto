@@ -10,11 +10,13 @@ import {
 import { readStore, writeStore, onCambioEsterno } from './utils/storage';
 import {
   normalizzaRegistro, fondiRegistri, timbra, seppellisciTutto,
-  aggiungiEvento, aggiungiEventi, rimuoviEvento,
+  aggiungiEvento, aggiungiEventi, rimuoviEvento, idsAggiunti,
 } from './utils/fusione';
 import auth from './auth';
 import { eliminaAccount } from './utils/account';
-import { distribuisci, tappeDaRiavviare, togliLotto } from './utils/arretrate';
+import {
+  distribuisci, tappeDaRiavviare, togliLotto, costruisciLotto,
+} from './utils/arretrate';
 import {
   calcolaConti, calcolaBaseline, intervalliCoperti, tempoCoperto,
   riferimentoAstinenza, giorniSenzaFumare, giorniZeroCoperti, eRicaduta,
@@ -803,7 +805,14 @@ export default function App() {
     const ricaduta = eRicaduta(dati, ts, SOGLIA_RICADUTA);
 
     let next = aggiungiEvento(dati, 'cig', ts);
-    const idSigaretta = next.eventi[next.eventi.length - 1].id;
+    /* NON `eventi[eventi.length - 1]`. A parità di istante l'ordine lo
+       decide l'identificativo, e un evento con lo stesso millisecondo
+       arrivato dall'altro dispositivo può finire dopo questo: la finestra
+       dei 25 secondi si ritrovava l'id sbagliato, e «Annulla» cancellava la
+       sigaretta dell'altro telefono lasciando dentro questa. Due istanti
+       uguali non sono un'ipotesi in questo file — sono lo scenario che
+       fusione.js esiste per gestire. */
+    const idSigaretta = idsAggiunti(dati, next)[0];
     // la ricaduta è un evento come gli altri, con il suo identificativo:
     // due dispositivi che ricadono non se ne perdono una
     if (ricaduta) next = aggiungiEvento(next, 'ricaduta', ts);
@@ -930,24 +939,27 @@ export default function App() {
 
     setTante(false);
     setUltimoId(null);
-    const idsLotto = next.eventi.slice(primaDiTutto.eventi?.length || 0).map((e) => e.id);
-    /* `ts` NON è un doppione di `ids`: la card scrive «dalle 9:10 alle
+    /* IL LOTTO LO COSTRUISCE `costruisciLotto`, in arretrate.js.
+
+       Qui c'era `next.eventi.slice(primaDiTutto.eventi.length)`, cioè gli
+       identificativi presi per POSIZIONE. Ma `aggiungiEvento` riordina per
+       istante: segnando tre sigarette di IERI, lo slice non restituiva
+       quelle tre — restituiva gli ultimi tre eventi per istante, cioè le
+       sigarette di OGGI. Toccare «Annulla» le seppelliva, con la lapide, e
+       lasciava dentro le arretrate. Verificato, non temuto.
+
+       `ts` NON è un doppione di `ids`: la card scrive «dalle 9:10 alle
        11:40», e per dirlo servono gli ISTANTI, che gli identificativi non
-       contengono. Mancava, e la card leggeva `lotto.ts[0]` su un campo che
-       non c'era: la schermata Oggi andava in eccezione appena si
-       confermavano delle arretrate. `nuovi` esce già ordinato da
-       `distribuisci`, quindi primo e ultimo sono davvero primo e ultimo.
-       `riavvio` serve invece all'annullamento: dice se le tappe del corpo
-       erano state fatte ripartire da questo lotto, e solo in quel caso
-       vanno rimesse indietro. */
-    setLotto({
-      ids: idsLotto,
+       contengono. `nuovi` esce già ordinato da `distribuisci`, quindi primo
+       e ultimo sono davvero primo e ultimo. `riavvio` serve invece
+       all'annullamento: dice se le tappe del corpo erano state fatte
+       ripartire da questo lotto, e solo in quel caso vanno rimesse
+       indietro. */
+    setLotto(costruisciLotto(primaDiTutto, next, {
       ts: nuovi,
-      quante: nuovi.length,
       quando: finestra.breve,
       riavvio,
-      prima: primaDiTutto,
-    });
+    }));
     clearTimeout(timerLotto.current);
     timerLotto.current = setTimeout(() => setLotto(null), 40000);
   }

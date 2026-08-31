@@ -104,7 +104,7 @@ export function creaKvSincronizzato({
      svuotamento si consegna solo quello che appartiene a chi è entrato,
      e il resto NON si tocca — resta lì, in attesa del suo proprietario. */
   const inCoda = new Map();
-  let codaCaricata = false;
+  let codaCaricata = null;      // la promessa della prima lettura, condivisa
   let svuotamentoInCorso = false;
   let timerCoda = null;
 
@@ -134,15 +134,36 @@ export function creaKvSincronizzato({
       : { uid: uidDaChiave(key) ?? null, value: v }
   );
 
-  async function caricaCoda() {
-    if (codaCaricata) return;
-    codaCaricata = true;
-    try {
-      const voci = analizza((await locale.get(CHIAVE_CODA))?.value);
-      if (Array.isArray(voci)) {
-        voci.forEach(([k, v]) => { if (!inCoda.has(k)) inCoda.set(k, normalizzaVoce(k, v)); });
-      }
-    } catch { /* coda mai scritta */ }
+  /* UNA PROMESSA, NON UN BOOLEANO.
+
+     Prima la bandiera si alzava PRIMA della lettura del disco:
+
+       caricaCoda()  → codaCaricata = true, e si mette ad aspettare il disco
+       set()         → `await caricaCoda()` torna SUBITO, la mappa è vuota
+                     → accoda() → salvaCoda() riscrive la coda con la sola
+                       voce nuova
+       il disco risponde → e rilegge la coda che è già stata troncata
+
+     Le scritture offline che stavano lì in attesa sparivano dal disco E
+     dalla memoria. Non è una gara stretta: `installStorage.js` chiama
+     `caricaCoda()` SENZA await al caricamento del modulo, quindi ogni
+     scrittura fatta nei primi millisecondi dell'app cade esattamente lì.
+
+     Con la promessa condivisa chi arriva secondo aspetta la stessa lettura
+     invece di scavalcarla. Se la lettura fallisce la promessa resta
+     comunque risolta: il `try` sta dentro, e una coda mai scritta non è un
+     errore. */
+  function caricaCoda() {
+    if (codaCaricata) return codaCaricata;
+    codaCaricata = (async () => {
+      try {
+        const voci = analizza((await locale.get(CHIAVE_CODA))?.value);
+        if (Array.isArray(voci)) {
+          voci.forEach(([k, v]) => { if (!inCoda.has(k)) inCoda.set(k, normalizzaVoce(k, v)); });
+        }
+      } catch { /* coda mai scritta */ }
+    })();
+    return codaCaricata;
   }
 
   function accoda(key, value, uid) {
@@ -373,6 +394,30 @@ export function creaKvSincronizzato({
         return { key, value };
       }
 
+      /* LA SESSIONE NON È LA PROVA DI PROPRIETÀ.
+
+         La coda è blindata (sopra), ma la scrittura diretta non lo era: si
+         prendeva `uid` dalla sessione e si scriveva, qualunque chiave
+         fosse. E le due cose non cambiano nello stesso istante — la chiave
+         la compone `installStorage.js` dallo stato dell'app, `uid` arriva
+         da `remoto.utente()`, cioè dalla sessione Supabase. Basta un cambio
+         di account mentre una scrittura è in volo:
+
+           set('smetto:log:A', …) parte  →  la sessione diventa B
+           → il registro di A finiva scritto sotto l'account di B.
+
+         La RLS non poteva farci niente: la policy guarda `user_id`, e B
+         stava scrivendo righe sue. La difesa sta qui, ed è la stessa regola
+         dello svuotamento: se la chiave ha un proprietario e non è chi è
+         entrato adesso, non si scrive — si accoda, e ci penserà lui quando
+         rientra. Le chiavi senza proprietario riconoscibile passano come
+         prima: `uidDaChiave` torna null e non c'è niente da confrontare. */
+      const proprietario = uidDaChiave(key);
+      if (proprietario && proprietario !== uid) {
+        accoda(key, value, proprietario);
+        return { key, value };
+      }
+
       const esito = await scriviRemoto(uid, key, value);
       const finale = esito.value || value;
       if (!esito.ok) accoda(key, finale, uid);
@@ -403,6 +448,14 @@ export function creaKvSincronizzato({
       if (!uid) {
         await caricaCoda();
         accoda(key, null, uidDaChiave(key));
+        return { key, deleted: true };
+      }
+      /* Stessa regola della scrittura: cancellare la riga di un altro
+         account è peggio che scriverla, quindi vale a maggior ragione. */
+      const proprietario = uidDaChiave(key);
+      if (proprietario && proprietario !== uid) {
+        await caricaCoda();
+        accoda(key, null, proprietario);
         return { key, deleted: true };
       }
       const esito = await scriviRemoto(uid, key, null);

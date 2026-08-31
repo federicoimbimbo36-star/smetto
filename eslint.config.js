@@ -3,7 +3,14 @@ import globals from 'globals';
 import reactHooks from 'eslint-plugin-react-hooks';
 
 export default [
-  { ignores: ['dist', 'node_modules'] },
+  /* `verifica/.schermate.cjs` non e' codice sorgente: e' il fascio che
+     esbuild produce per far girare il banco delle schermate su Node,
+     ed e' scritto dentro il progetto dal comando documentato in
+     CORREZIONI-AUDIT.md. Lint su un fascio minificato che contiene React
+     intero vuol dire 234 errori che non sono errori — e un lint che grida
+     al lupo e' un lint che nessuno guarda piu'. Stesso ragionamento del
+     blocco sui file di verifica qui sotto. */
+  { ignores: ['dist', 'node_modules', 'verifica/.schermate.cjs'] },
   js.configs.recommended,
   {
     files: ['**/*.{js,jsx}'],

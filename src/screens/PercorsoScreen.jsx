@@ -382,19 +382,24 @@ export default function PercorsoScreen({
                 <span className="registro-nome">{etichettaGiorno(giorno, now)}</span>
                 <span className="registro-tot num">{lista.length}</span>
               </div>
-              {lista.map((t, i) => {
+              {/* La chiave, il motivo e la cancellazione vanno tutti
+                  sull'IDENTIFICATIVO dell'evento. Con l'istante, due
+                  sigarette nello stesso millisecondo avevano la stessa
+                  chiave React, si scambiavano il motivo, e un tocco sulla
+                  X ne cancellava due. */}
+              {lista.map((e, i) => {
                 const prec = lista[i + 1];
                 return (
-                  <div className="registro-riga" key={t}>
-                    <span className="registro-ora num">{ora(t)}</span>
+                  <div className="registro-riga" key={e.id}>
+                    <span className="registro-ora num">{ora(e.ts)}</span>
                     <span className="registro-meta">
-                      {tags[t] && <span>{tags[t]}</span>}
-                      {tags[t] && prec && ' · '}
-                      {prec && <span className="num">{durata(t - prec)} dopo</span>}
+                      {tags[e.id] && <span>{tags[e.id]}</span>}
+                      {tags[e.id] && prec && ' · '}
+                      {prec && <span className="num">{durata(e.ts - prec.ts)} dopo</span>}
                     </span>
                     <button
-                      className="registro-canc" onClick={() => onElimina(t)}
-                      aria-label={`Togli la sigaretta delle ${ora(t)}`}
+                      className="registro-canc" onClick={() => onElimina(e.id)}
+                      aria-label={`Togli la sigaretta delle ${ora(e.ts)}`}
                     >
                       <X size={17} />
                     </button>

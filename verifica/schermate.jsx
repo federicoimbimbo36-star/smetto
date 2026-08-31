@@ -290,11 +290,46 @@ for (const [nome, [Componente, props]] of Object.entries(casi)) {
     return chiavi;
   };
 
-  const scritte = chiaviDi(app, 'setLotto(');
+  /* IL LOTTO NON LO COMPONE PIÙ App.jsx. Lo costruisce `costruisciLotto`
+     in `src/utils/arretrate.js`, perché la lista `ids` va verificata e non
+     guardata: finché la costruzione stava dentro App.jsx, il banco di
+     `annulla-lotto.mjs` se la ricopiava — difetto compreso — e quindi non
+     poteva accorgersi che gli identificativi erano presi per posizione.
+
+     Quindi il patto si controlla dove l'oggetto nasce davvero. E si
+     controlla anche che App.jsx CHIAMI quel costruttore: se domani
+     ricomincia a comporre il lotto a mano, le due forme possono divergere
+     di nuovo senza che niente strilli. */
+  /* I COMMENTI NON SONO CODICE. Senza questo passaggio il controllo qui
+     sotto trovava lo `slice` citato dentro il commento che SPIEGA il
+     difetto — cioè bocciava la correzione perché la correzione è
+     documentata. Un controllo che punisce chi scrive i commenti è un
+     controllo che li fa cancellare. */
+  const senzaCommenti = (t) => t
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+  const codiceApp = senzaCommenti(app);
+  const arretrate = senzaCommenti(
+    readFileSync(resolve(process.cwd(), 'src/utils/arretrate.js'), 'utf8'),
+  );
+  const daCostruttore = arretrate.slice(arretrate.indexOf('export function costruisciLotto'));
+  const scritte = chiaviDi(daCostruttore, 'return ');
   const lette = new Set([...schermo.matchAll(/\blotto\.(\w+)/g)].map((m) => m[1]));
   const finte = Object.keys(casi['Oggi — lotto di arretrate appena aggiunto'][1].lotto);
 
-  ok('patto · App.jsx costruisce davvero il lotto con delle chiavi', scritte.size > 0);
+  ok('patto · il costruttore del lotto esiste in arretrate.js',
+    arretrate.includes('export function costruisciLotto'));
+  ok('patto · App.jsx usa il costruttore invece di comporre il lotto a mano',
+    /setLotto\(\s*costruisciLotto\(/.test(codiceApp),
+    'App.jsx compone di nuovo il lotto per conto suo');
+  ok('patto · e non prende più gli eventi per posizione',
+    !/eventi\.slice\(\s*\w+(\?\.|\.)eventi/.test(codiceApp),
+    'in App.jsx è tornato uno slice posizionale sugli eventi');
+  ok('patto · né l\'ultimo evento della lista per la registrazione singola',
+    !/eventi\[\s*\w+\.eventi\.length\s*-\s*1\s*\]/.test(codiceApp),
+    'in App.jsx è tornato eventi[length - 1]');
+  ok('patto · il costruttore mette davvero delle chiavi', scritte.size > 0);
   [...lette].forEach((campo) => {
     ok(`patto · OggiScreen legge lotto.${campo}, e App.jsx lo scrive`, scritte.has(campo),
       `App.jsx mette: ${[...scritte].join(', ')}`);

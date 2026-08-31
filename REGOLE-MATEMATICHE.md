@@ -46,7 +46,7 @@ tabella**, e i commenti di `src/utils/conti.js` adesso la seguono.
 | D11 | classifica | `dichiarato` in `App.jsx` |
 | D12 | record senza fumare | `recordSenzaFumare` |
 | D13 | medie di periodo | `mediaCoperta` |
-| D14 | il registro come dato condiviso | `utils/fusione.js` |
+| D14 | identità dell'evento e registro condiviso | `utils/fusione.js` |
 
 ---
 
@@ -375,36 +375,75 @@ riduzione.
 
 ---
 
-## D14 · Il registro come dato condiviso
+## D14 · Identità dell'evento, e il registro come dato condiviso
 
 Le regole D1–D13 dicono come si contano le sigarette. Questa dice che
 cosa **è** una sigaretta quando la stessa persona ha due telefoni.
 
 ```
-cigs(A ⊕ B)    = ( cigs(A) ∪ cigs(B) ) \ ( rimossi(A) ∪ rimossi(B) )
-rimossi(A ⊕ B) = rimossi(A) ∪ rimossi(B)
+evento         = { id, tipo, ts }
+
+id  →  QUALE evento è      (fusione, cancellazioni, etichette)
+ts  →  QUANDO è successo   (tutta la matematica, D1–D13)
+```
+
+**Le due proprietà sono indipendenti.** Qui c'era scritto il contrario:
+«l'istante in millisecondi è l'identità dell'evento… due sigarette non
+possono condividere un millisecondo». Era falso, e non per un caso di
+laboratorio:
+
+- `distribuisci` è una funzione **pura** di (quante, finestra). Due
+  dispositivi che segnano «ieri, 10 sigarette» producono dieci istanti
+  identici al millisecondo. Certo, non improbabile.
+- un orologio spostato indietro (fuso orario, correzione manuale) fa
+  restituire a `Date.now()` millisecondi già usati.
+
+E la conseguenza non era «un doppione»: era una **sigaretta in meno**,
+ingoiata dall'unione senza un errore. Più: due sigarette allo stesso
+istante condividevano il motivo, e cancellarne una cancellava anche
+l'altra sull'altro dispositivo.
+
+Un'identità dev'essere univoca **per costruzione**, non per probabilità.
+
+```
+eventi(A ⊕ B)  = ( eventi(A) ∪ eventi(B) )  meno  ( rimossi(A) ∪ rimossi(B) )
+                 unione PER `id`
+rimossi(A ⊕ B) = rimossi(A) ∪ rimossi(B)       (elenco di `id`)
+tags[id]                                        (non più tags[ts])
 campo(A ⊕ B)   = quello con l'orologio più alto, campo per campo
 start(A ⊕ B)   = min
 ```
 
-**L'istante in millisecondi è l'identità dell'evento.** Lo era già di
-fatto — su quello sono indicizzate le etichette del registro — e adesso lo
-è anche formalmente: due sigarette non possono condividere un
-millisecondo, e la stessa sigaretta ha lo stesso identificativo su tutti i
-dispositivi.
+Le due proprietà che devono valere **insieme**, e che prima non si
+potevano nemmeno esprimere perché erano la stessa cosa:
 
-Da qui discende tutto: due dispositivi non si perdono niente, i tentativi
-ripetuti non duplicano, e **l'ordine con cui le sincronizzazioni arrivano
-non cambia il risultato finale**. La fusione è commutativa, associativa e
-idempotente.
+```
+eventi diversi con lo stesso istante  →  NON si fondono
+lo stesso evento ritrasmesso          →  si fonde in uno solo
+```
+
+`cigs`, `resists`, `checkins` e `ricadute` restano array di millisecondi:
+sono **proiezioni** di `eventi`, generate da `normalizzaRegistro`, e la
+matematica continua a leggerle come prima. La sola differenza è che
+possono contenere due volte lo stesso numero — che è esattamente quello
+che deve succedere quando due eventi cadono nello stesso millisecondo.
+
+**Invariante nuova:** `start ≤ min(cigs)`. `intervalliCoperti` scarta gli
+eventi precedenti a `start`, quindi un registro con `start` più recente
+della sigaretta più vecchia aveva eventi registrati, contati nei totali e
+invisibili alla copertura.
+
+Da qui discende tutto il resto: due dispositivi non si perdono niente, i
+tentativi ripetuti non duplicano, e **l'ordine con cui le sincronizzazioni
+arrivano non cambia il risultato finale**. La fusione è commutativa,
+associativa e idempotente.
 
 Le cancellazioni sono **lapidi**, non assenze: senza, l'unione farebbe
 risorgere ogni sigaretta tolta dal registro alla prima sincronizzazione.
 
-Le ricadute sono diventate un **insieme di istanti** invece di un
-contatore. Un contatore scalare non si fonde: due dispositivi che salgono
-da 3 a 4 ciascuno, riconciliati con «vince il più recente», danno 4 e non
-5. `ripartenzeBase` porta avanti il numero delle versioni precedenti senza
+Le ricadute sono diventate **eventi** invece di un contatore. Un contatore
+scalare non si fonde: due dispositivi che salgono da 3 a 4 ciascuno,
+riconciliati con «vince il più recente», danno 4 e non 5. `ripartenzeBase` porta avanti il numero delle versioni precedenti senza
 inventare istanti che nessuno ha registrato, e il numero mostrato è la
 somma dei due.
 

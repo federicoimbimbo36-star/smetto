@@ -17,9 +17,10 @@
 /* ------------------------------------------------------------------ */
 
 import { creaKvSincronizzato, CHIAVE_CODA } from '../src/utils/sincronizza.js';
+import { distribuisci, finestraDi } from '../src/utils/arretrate.js';
 import {
   fondiValore, fondiRegistri, normalizzaRegistro, timbra,
-  rimuoviIstante, seppellisciTutto,
+  rimuoviEvento, seppellisciTutto, aggiungiEvento, nuovoId, idStorico,
 } from '../src/utils/fusione.js';
 
 let passati = 0;
@@ -33,13 +34,12 @@ const eq = (nome, a, b) => ok(nome, JSON.stringify(a) === JSON.stringify(b),
 
 const CHIAVE = 'smetto:log:u1';
 const vuoto = () => ({
-  v: 8, start: null, smessoDal: null, cigs: [], resists: [], tags: {}, checkins: [],
-  groups: [], notify: true, avvisiCorpo: true, onboarded: false,
+  v: 9, start: null, smessoDal: null,
+  eventi: [], cigs: [], resists: [], checkins: [], ricadute: [], rimossi: [],
+  tags: {}, groups: [], notify: true, avvisiCorpo: true, onboarded: false,
   profile: { motivo: '', baseline: null, prezzoPacchetto: null, perPacchetto: 20, sesso: 'non_detto' },
   plans: {}, tappeViste: { ref: null, idx: [] },
-  ricadute: [], ripartenzeBase: 0, ripartenze: 0,
-  rimossi: { cigs: [], resists: [], checkins: [], ricadute: [] },
-  orologi: {},
+  ripartenzeBase: 0, ripartenze: 0, orologi: {},
 });
 
 /* ------------------------------------------------------------------ */
@@ -84,7 +84,15 @@ function creaDatabase() {
       db.scritture += 1;
       return { data: [{ rev: 1 }] };
     },
-    async cancella(uid, key) { await db.attesa(); righe.delete(key); return {}; },
+    /* Come il vero: la cancellazione dichiara la revisione da cui parte,
+       e se qualcuno ha scritto nel frattempo non tocca niente. */
+    async cancella(uid, key, rev) {
+      await db.attesa();
+      const r = righe.get(key);
+      if (!r || r.rev !== rev) return { data: [] };
+      righe.delete(key);
+      return { data: [{ rev: r.rev }] };
+    },
     async elenca(uid, prefix) {
       await db.attesa();
       return { data: [...righe.keys()].filter((k) => k.startsWith(prefix)).map((key) => ({ key })) };
@@ -118,6 +126,15 @@ function creaDispositivo(db, condivisa) {
   const locale = creaLocale(condivisa);
   let kv = creaKvSincronizzato({ locale, remoto: db, fondi: fondiValore, attesa: 60 });
   let memoria = null;
+  /* Come fa l'app: quando lo strato di sincronizzazione fonde per conto
+     suo, lo stato in memoria è rimasto indietro e va rifuso. Senza,
+     il salvataggio successivo partirebbe da una base vecchia. */
+  const riallinea = async () => {
+    const r = await locale.get(CHIAVE);
+    if (!r?.value) return;
+    memoria = fondiRegistri(memoria, JSON.parse(r.value), vuoto);
+  };
+  kv.onCambioEsterno(() => { attese.push(riallinea()); });
 
   const disp = {
     locale,
@@ -137,19 +154,34 @@ function creaDispositivo(db, condivisa) {
       return dopo;
     },
     async registra(ts) {
-      return disp.salva((d) => ({ ...d, start: d.start ?? ts, cigs: [...d.cigs, ts] }));
+      return disp.salva((d) => ({ ...aggiungiEvento(d, 'cig', ts), start: d.start ?? ts }));
     },
-    async elimina(ts) { return disp.salva((d) => rimuoviIstante(d, 'cigs', ts)); },
+    /* Si cancella per IDENTIFICATIVO. Nei casi in cui il test conosce solo
+       l'istante — quelli scritti prima che gli eventi avessero un'identità —
+       si risale al primo evento con quell'istante, che è quello che
+       l'utente avrebbe toccato nel registro. */
+    async elimina(ts) {
+      const e = (memoria?.eventi || []).find((x) => x.tipo === 'cig' && x.ts === ts);
+      if (!e) return memoria;
+      return disp.salva((d) => rimuoviEvento(d, e.id));
+    },
+    async eliminaId(id) { return disp.salva((d) => rimuoviEvento(d, id)); },
     async svuota() { await kv.svuotaCoda(); },
     riavvia() {
       // la coda ricomincia dal disco, lo stato in memoria si perde
       kv = creaKvSincronizzato({ locale, remoto: db, fondi: fondiValore, attesa: 60 });
+      kv.onCambioEsterno(() => { attese.push(riallinea()); });
       memoria = null;
     },
     inSospeso: () => kv.inSospeso(),
   };
   return disp;
 }
+
+/* Le rifusioni scattano dopo la scrittura: `sistemato()` aspetta che
+   siano finite prima di controllare, come farebbe un render di React. */
+const attese = [];
+const sistemato = async () => { while (attese.length) await attese.shift(); };
 
 const conta = (db, key = CHIAVE) => db.stato(key)?.value?.cigs?.length ?? 0;
 const cigsDb = (db) => db.stato()?.value?.cigs ?? [];
@@ -265,8 +297,8 @@ const cigsDb = (db) => db.stato()?.value?.cigs ?? [];
   db.online = true;
   await A.svuota();
   eq('Offline 4 · resta solo quella non cancellata', cigsDb(db), [1_800_000_060_000]);
-  eq('Offline 4 · e la cancellazione viaggia come lapide',
-    db.stato().value.rimossi.cigs, [1_800_000_000_000]);
+  ok('Offline 4 · e la cancellazione viaggia come lapide',
+    db.stato().value.rimossi.length === 1, JSON.stringify(db.stato().value.rimossi));
 }
 
 /* Scenario 5: A offline registra, B online registra, poi A rientra */
@@ -325,7 +357,7 @@ const cigsDb = (db) => db.stato()?.value?.cigs ?? [];
 
   // l'utente registra mentre la risposta vecchia è ancora per aria
   db.latenza = 0;
-  const nuovo = { ...registro, cigs: [...registro.cigs, 1_900_000_000_000] };
+  const nuovo = aggiungiEvento(normalizzaRegistro(registro, vuoto), 'cig', 1_900_000_000_000);
   await A.kv.set(CHIAVE, JSON.stringify(nuovo));
 
   // e adesso arriva la risposta nata PRIMA della registrazione
@@ -365,9 +397,9 @@ const cigsDb = (db) => db.stato()?.value?.cigs ?? [];
    lo stesso comunque arrivino. */
 {
   const base = normalizzaRegistro({ start: 1000, cigs: [1000] }, vuoto);
-  const conA = { ...base, cigs: [1000, 2000] };
-  const conB = { ...base, cigs: [1000, 3000] };
-  const senzaA = rimuoviIstante(conA, 'cigs', 2000);
+  const conA = aggiungiEvento(base, 'cig', 2000);
+  const conB = aggiungiEvento(base, 'cig', 3000);
+  const senzaA = rimuoviEvento(conA, conA.eventi[conA.eventi.length - 1].id);
 
   const ordini = [
     [conA, conB, senzaA],
@@ -489,8 +521,8 @@ const cigsDb = (db) => db.stato()?.value?.cigs ?? [];
    ciascuno, riconciliati con «vince il più recente», davano 4 e non 5. */
 {
   const base = normalizzaRegistro({ ricadute: [100, 200, 300] }, vuoto);
-  const a = timbra(base, { ...base, ricadute: [...base.ricadute, 400] }, 1000);
-  const b = timbra(base, { ...base, ricadute: [...base.ricadute, 500] }, 1001);
+  const a = timbra(base, aggiungiEvento(base, 'ricaduta', 400), 1000);
+  const b = timbra(base, aggiungiEvento(base, 'ricaduta', 500), 1001);
   const fuso = fondiRegistri(a, b, vuoto);
   eq('Ricadute · due dispositivi, cinque ricadute', fuso.ricadute.length, 5);
   eq('Ricadute · e il numero mostrato è la loro conta', fuso.ripartenze, 5);
@@ -501,7 +533,7 @@ const cigsDb = (db) => db.stato()?.value?.cigs ?? [];
   const vecchio = { v: 7, start: 1000, cigs: [1000], ripartenze: 3 };
   const migrato = normalizzaRegistro(vecchio, vuoto);
   eq('Ricadute · il contatore vecchio viene ereditato', migrato.ripartenze, 3);
-  const conNuova = { ...migrato, ricadute: [2000] };
+  const conNuova = aggiungiEvento(migrato, 'ricaduta', 2000);
   eq('Ricadute · e le nuove si sommano a quello',
     normalizzaRegistro(conNuova, vuoto).ripartenze, 4);
 }
@@ -623,7 +655,8 @@ const cigsDb = (db) => db.stato()?.value?.cigs ?? [];
   };
   const pulito = normalizzaRegistro(sporco, vuoto);
   eq('Sporcizia · restano solo gli istanti veri, senza doppioni', pulito.cigs, [1000]);
-  eq('Sporcizia · le lapidi tolgono quello che era già cancellato', pulito.rimossi.cigs, [2000]);
+  eq('Sporcizia · le lapidi tolgono quello che era già cancellato',
+    pulito.rimossi, [idStorico('cig', 2000)]);
   eq('Sporcizia · le ricadute sono un insieme', pulito.ricadute, [3000]);
   ok('Sporcizia · nessun valore non finito',
     [pulito.start, pulito.ripartenze].every((v) => v === null || Number.isFinite(v)),
@@ -657,6 +690,538 @@ const cigsDb = (db) => db.stato()?.value?.cigs ?? [];
   eq('Chiavi sconosciute · non si fondono a caso, vince la copia locale',
     fondiValore('altro:qualcosa', { a: 1 }, { a: 2 }), { a: 1 });
 }
+
+
+/* ================================================================== */
+/* 16. L'IDENTITÀ DELL'EVENTO NON È IL SUO MILLISECONDO                */
+/* ================================================================== */
+/* Il millisecondo dice QUANDO è successo. Non dice QUALE evento è.
+   Finché le due cose erano la stessa, due sigarette allo stesso
+   millisecondo erano una sigaretta sola — e non per un caso di
+   laboratorio: `distribuisci` è una funzione pura di (quante, finestra),
+   quindi due dispositivi che segnano «ieri, 10 sigarette» producono dieci
+   istanti identici al millisecondo. Certo, non improbabile.
+
+   Le due proprietà che devono valere INSIEME, ed è la distinzione che
+   prima non si poteva esprimere:
+     eventi diversi con lo stesso istante  →  NON si fondono
+     lo stesso evento ritrasmesso          →  si fonde in uno solo        */
+
+const T0 = 1_800_000_000_000;
+const conEventi = (...eventi) => {
+  let d = normalizzaRegistro({ start: T0 }, vuoto);
+  eventi.forEach(([tipo, ts, id]) => { d = aggiungiEvento(d, tipo, ts, id); });
+  return d;
+};
+
+/* --- Scenario A: due registrazioni nello stesso millisecondo, stesso
+       dispositivo. Succede con l'orologio spostato indietro (fuso orario,
+       correzione manuale): `Date.now()` restituisce un millisecondo già
+       usato, e la sigaretta nuova veniva ingoiata senza un errore. --- */
+{
+  const d = conEventi(['cig', T0], ['cig', T0]);
+  eq('Identità A · due registrazioni nello stesso millisecondo restano due', d.cigs.length, 2);
+  eq('Identità A · e sopravvivono alla normalizzazione',
+    normalizzaRegistro(d, vuoto).cigs.length, 2);
+  eq('Identità A · con due identificativi diversi',
+    new Set(d.eventi.map((e) => e.id)).size, 2);
+  eq('Identità A · e lo stesso istante, perché il tempo non è cambiato',
+    d.cigs, [T0, T0]);
+}
+
+/* --- Scenario B: due dispositivi registrano nello stesso millisecondo --- */
+{
+  const A = conEventi(['cig', T0]);
+  const B = conEventi(['cig', T0]);
+  const f = fondiRegistri(A, B, vuoto);
+  eq('Identità B · due dispositivi, stesso millisecondo, due sigarette', f.cigs.length, 2);
+  eq('Identità B · e la fusione è commutativa',
+    fondiRegistri(B, A, vuoto).cigs.length, 2);
+}
+
+/* --- Scenario C: stesso istante, informazioni diverse --- */
+{
+  let d = conEventi(['cig', T0], ['cig', T0]);
+  const [x, y] = d.eventi;
+  d = { ...d, tags: { [x.id]: 'stress', [y.id]: 'caffè' } };
+  const dopo = normalizzaRegistro(d, vuoto);
+  eq('Identità C · due sigarette allo stesso istante hanno due motivi diversi',
+    [dopo.tags[x.id], dopo.tags[y.id]], ['stress', 'caffè']);
+  const fuso = fondiRegistri(dopo, dopo, vuoto);
+  eq('Identità C · e i motivi restano distinti dopo la fusione',
+    [fuso.tags[x.id], fuso.tags[y.id]], ['stress', 'caffè']);
+}
+
+/* --- Scenario D: lo stesso evento sincronizzato due volte --- */
+{
+  const A = conEventi(['cig', T0]);
+  const id = A.eventi[0].id;
+  const copia = conEventi(['cig', T0, id]);          // stesso identificativo
+  eq('Identità D · lo stesso evento ritrasmesso resta uno',
+    fondiRegistri(A, copia, vuoto).cigs.length, 1);
+  let acc = A;
+  for (let i = 0; i < 10; i += 1) acc = fondiRegistri(acc, copia, vuoto);
+  eq('Identità D · e dieci ritrasmissioni non fanno dieci sigarette', acc.cigs.length, 1);
+}
+
+/* --- Il test obbligatorio: cancellare X non deve cancellare Y --- */
+{
+  const A = conEventi(['cig', T0]);                  // A registra X
+  const B = conEventi(['cig', T0]);                  // B registra Y, stesso istante
+  const X = A.eventi[0].id;
+  const Y = B.eventi[0].id;
+  const insieme = fondiRegistri(A, B, vuoto);
+  eq('Identità · X e Y convivono prima della cancellazione', insieme.cigs.length, 2);
+
+  const senzaX = rimuoviEvento(insieme, X);          // A elimina X
+  const dopoSync = fondiRegistri(senzaX, B, vuoto);  // …e sincronizza con B, che ha ancora Y
+
+  eq('Identità · dopo la cancellazione di X resta un evento solo', dopoSync.cigs.length, 1);
+  eq('Identità · ed è Y', dopoSync.eventi[0].id, Y);
+  ok('Identità · X resta cancellato', dopoSync.rimossi.includes(X));
+  ok('Identità · e non torna nemmeno rifondendo dieci volte', (() => {
+    let acc = dopoSync;
+    for (let i = 0; i < 10; i += 1) acc = fondiRegistri(acc, i % 2 ? A : B, vuoto);
+    return acc.cigs.length === 1 && acc.eventi[0].id === Y;
+  })());
+}
+
+/* --- `distribuisci`: la collisione certa che ha motivato tutto --- */
+{
+  const adesso = new Date(2026, 7, 30, 14, 0).getTime();
+  const ieri = finestraDi('ieri', adesso);
+  const suA = distribuisci(10, ieri, []);
+  const suB = distribuisci(10, ieri, []);
+  ok('Identità · `distribuisci` produce gli stessi istanti su due dispositivi',
+    JSON.stringify(suA) === JSON.stringify(suB),
+    'se un giorno smettesse di essere vero, questo controllo non proverebbe più niente');
+
+  let A = normalizzaRegistro({ start: suA[0] }, vuoto);
+  suA.forEach((t) => { A = aggiungiEvento(A, 'cig', t); });
+  let B = normalizzaRegistro({ start: suB[0] }, vuoto);
+  suB.forEach((t) => { B = aggiungiEvento(B, 'cig', t); });
+
+  eq('Identità · due lotti arretrati identici su due dispositivi fanno venti sigarette',
+    fondiRegistri(A, B, vuoto).cigs.length, 20);
+}
+
+/* --- Gli identificativi non si ripetono mai --- */
+{
+  const generati = new Set();
+  for (let i = 0; i < 20000; i += 1) generati.add(nuovoId());
+  eq('Identità · ventimila identificativi, ventimila valori distinti', generati.size, 20000);
+}
+
+/* --- Il modello temporale non è cambiato --- */
+/* L'identificativo NON sostituisce l'istante: tutta la matematica continua
+   a leggere il tempo vero dell'evento. */
+{
+  const ts1 = new Date(2026, 6, 1, 9).getTime();
+  const ts2 = new Date(2026, 6, 5, 22).getTime();
+  const d = conEventi(['cig', ts2], ['cig', ts1], ['resist', ts1 + 1000], ['checkin', ts2 + 5000]);
+  eq('Tempo · le proiezioni sono ordinate per istante', d.cigs, [ts1, ts2]);
+  eq('Tempo · ogni tipo finisce nella sua proiezione',
+    [d.cigs.length, d.resists.length, d.checkins.length], [2, 1, 1]);
+  eq('Tempo · e l\'istante è quello vero, non l\'ordine di inserimento',
+    Math.min(...d.cigs), ts1);
+  /* La normalizzazione tira indietro l'inizio del percorso fino alla
+     sigaretta più vecchia conosciuta: l'identità non c'entra, il tempo
+     resta quello vero. */
+  eq('Tempo · l\'inizio del percorso segue l\'istante più vecchio, non l\'identità',
+    normalizzaRegistro(d, vuoto).start, ts1);
+}
+
+/* --- La migrazione dei registri vecchi --- */
+/* L'identificativo storico è DERIVATO dal millisecondo. È la proprietà che
+   rende la migrazione sicura: se fosse casuale, due dispositivi che
+   aggiornano l'app produrrebbero due copie di ogni sigaretta mai
+   registrata alla prima sincronizzazione. */
+{
+  const vecchio = {
+    v: 8,
+    start: T0,
+    cigs: [T0, T0 + 60000, T0 + 120000],
+    resists: [T0 + 30000],
+    checkins: [T0 + 90000],
+    ricadute: [T0 + 120000],
+    tags: { [T0]: 'stress' },
+    rimossi: { cigs: [T0 + 999000] },
+    profile: { prezzoPacchetto: 6 },
+  };
+  const m = normalizzaRegistro(vecchio, vuoto);
+  eq('Migrazione · le sigarette ci sono tutte', m.cigs.length, 3);
+  eq('Migrazione · e anche voglie, check-in e ricadute',
+    [m.resists.length, m.checkins.length, m.ricadute.length], [1, 1, 1]);
+  eq('Migrazione · gli istanti non si spostano di un millisecondo',
+    m.cigs, [T0, T0 + 60000, T0 + 120000]);
+  eq('Migrazione · il motivo resta attaccato alla sua sigaretta',
+    m.tags[idStorico('cig', T0)], 'stress');
+  ok('Migrazione · quello che era stato cancellato resta cancellato',
+    m.rimossi.includes(idStorico('cig', T0 + 999000)));
+  eq('Migrazione · il prezzo non si perde per strada', m.profile.prezzoPacchetto, 6);
+
+  const m2 = normalizzaRegistro(vecchio, vuoto);
+  eq('Migrazione · due dispositivi migrano lo stesso registro senza raddoppiarlo',
+    fondiRegistri(m, m2, vuoto).cigs.length, 3);
+  eq('Migrazione · e rifondere non aggiunge niente',
+    fondiRegistri(fondiRegistri(m, m2, vuoto), m, vuoto).cigs.length, 3);
+
+  /* Il registro migrato non deve rileggere le proprie proiezioni come se
+     fossero dati vecchi: sarebbe il doppio di tutto a ogni apertura. */
+  let acc = m;
+  for (let i = 0; i < 5; i += 1) acc = normalizzaRegistro(acc, vuoto);
+  eq('Migrazione · cinque normalizzazioni di fila non moltiplicano niente', acc.cigs.length, 3);
+}
+
+/* --- Un registro a metà: `eventi` c'è, le vecchie liste pure --- */
+{
+  const misto = {
+    v: 9,
+    start: T0,
+    eventi: [{ id: 'abc', tipo: 'cig', ts: T0 }],
+    cigs: [T0],                                    // la proiezione dello stesso evento
+  };
+  eq('Migrazione · con `eventi` presente le liste sono proiezioni, non dati',
+    normalizzaRegistro(misto, vuoto).cigs.length, 1);
+}
+
+/* ================================================================== */
+/* 17. STESSO ISTANTE, IN TUTTE LE SITUAZIONI DELLA VITA VERA          */
+/* ================================================================== */
+{
+  // due dispositivi, stesso istante, con la rete di mezzo
+  const db = creaDatabase();
+  const A = creaDispositivo(db, new Map());
+  const B = creaDispositivo(db, new Map());
+  await A.apri();
+  await B.apri();
+  await A.registra(T0);
+  await B.registra(T0);
+  eq('Stesso istante · due dispositivi, il database ne ha due', conta(db), 2);
+  eq('Stesso istante · e sono lo stesso millisecondo', cigsDb(db), [T0, T0]);
+}
+{
+  // due schede dello stesso browser
+  const db = creaDatabase();
+  const condivisa = new Map();
+  const T1 = creaDispositivo(db, condivisa);
+  const T2 = creaDispositivo(db, condivisa);
+  await T1.apri();
+  await T2.apri();
+  await T1.registra(T0);
+  await T2.registra(T0);
+  eq('Stesso istante · due schede, due sigarette', conta(db), 2);
+}
+{
+  // con tentativi ripetuti: la stessa scrittura non deve moltiplicare
+  const db = creaDatabase();
+  const A = creaDispositivo(db, new Map());
+  await A.apri();
+  await A.registra(T0);
+  await A.registra(T0);
+  const testo = JSON.stringify(A.stato());
+  for (let i = 0; i < 5; i += 1) await A.kv.set(CHIAVE, testo);
+  eq('Stesso istante · cinque tentativi identici non aggiungono niente', conta(db), 2);
+}
+{
+  // stesso istante + cancellazione, passando dal database
+  const db = creaDatabase();
+  const A = creaDispositivo(db, new Map());
+  const B = creaDispositivo(db, new Map());
+  await A.apri();
+  await B.apri();
+  db.online = false;
+  await A.registra(T0);
+  const idA = A.stato().eventi.find((e) => e.ts === T0).id;
+  db.online = true;
+  await B.registra(T0);
+  await A.svuota();
+  eq('Stesso istante · con cancellazione — prima ce ne sono due', conta(db), 2);
+  await A.eliminaId(idA);
+  eq('Stesso istante · cancellata la propria, resta quella dell\'altro', conta(db), 1);
+  await B.apri();
+  eq('Stesso istante · e l\'altro dispositivo vede la sua, non zero', B.stato().cigs.length, 1);
+}
+{
+  // stesso istante + etichette
+  const db = creaDatabase();
+  const A = creaDispositivo(db, new Map());
+  const B = creaDispositivo(db, new Map());
+  await A.apri();
+  await B.apri();
+  await A.registra(T0);
+  const idA = A.stato().eventi[0].id;
+  await A.salva((d) => ({ ...d, tags: { ...d.tags, [idA]: 'stress' } }));
+  await B.registra(T0);
+  const idB = B.stato().eventi.find((e) => e.id !== idA)?.id;
+  await B.salva((d) => ({ ...d, tags: { ...d.tags, [idB]: 'caffè' } }));
+  const finale = db.stato().value;
+  eq('Stesso istante · due motivi diversi sulla stessa ora',
+    [finale.tags[idA], finale.tags[idB]], ['stress', 'caffè']);
+}
+{
+  // stesso istante + ricaduta
+  const d = conEventi(['cig', T0], ['ricaduta', T0], ['cig', T0]);
+  eq('Stesso istante · sigaretta e ricaduta nello stesso millisecondo convivono',
+    [d.cigs.length, d.ricadute.length], [2, 1]);
+  eq('Stesso istante · e il contatore delle ripartenze è la conta delle ricadute',
+    normalizzaRegistro(d, vuoto).ripartenze, 1);
+}
+{
+  // stesso istante + offline + refresh
+  const db = creaDatabase();
+  const disco = new Map();
+  const A = creaDispositivo(db, disco);
+  await A.apri();
+  db.online = false;
+  await A.registra(T0);
+  await A.registra(T0);
+  A.riavvia();                                     // refresh con la coda piena
+  db.online = true;
+  await A.apri();
+  await A.svuota();
+  eq('Stesso istante · offline, refresh, rientro: restano due', conta(db), 2);
+  eq('Stesso istante · e l\'app le rivede', (await A.apri()).cigs.length, 2);
+}
+{
+  // caos con istanti che si ripetono apposta
+  let seme = 909;
+  const rnd = () => { seme = (seme * 1103515245 + 12345) % 2147483648; return seme / 2147483648; };
+  const db = creaDatabase();
+  const A = creaDispositivo(db, new Map());
+  const B = creaDispositivo(db, new Map());
+  await A.apri();
+  await B.apri();
+  const istanti = [T0, T0 + 1000, T0 + 2000];       // solo tre istanti possibili
+  let quante = 0;
+  for (let i = 0; i < 60; i += 1) {
+    db.online = rnd() > 0.3;
+    const disp = rnd() < 0.5 ? A : B;
+    await disp.registra(istanti[Math.floor(rnd() * istanti.length)]);
+    quante += 1;
+  }
+  db.online = true;
+  await A.svuota(); await B.svuota();
+  await A.apri(); await B.apri();
+  await A.svuota(); await B.svuota();
+  eq('Stesso istante · sessanta registrazioni su tre soli istanti, sessanta sigarette',
+    conta(db), quante);
+}
+
+
+
+/* ================================================================== */
+/* 18. LA CANCELLAZIONE DELLA CHIAVE, CHE NON PUÒ ESSERE CIECA         */
+/* ================================================================== */
+/* `aggiorna` dichiarava da quale revisione partiva; `cancella` no, e
+   faceva un DELETE secco sulla riga. La scrittura era protetta, la
+   cancellazione — che distrugge di più — non lo era.
+
+   Va detto con onestà: nell'app di oggi questo ramo NON è raggiungibile.
+   Con Supabase configurato, eliminare l'account passa dalla funzione
+   `delete_me` sul database e dalla cascata, non da qui; senza Supabase,
+   `window.storage` è la sola copia locale e non c'è nessun remoto da
+   cancellare. Il difetto è nel codice, non nell'esperienza di nessuno.
+   Si corregge lo stesso, perché `delete` è un metodo pubblico dello strato
+   di storage, la coda offline può trasportarlo, e la prossima funzione che
+   ne avesse bisogno l'avrebbe usato così com'era. */
+
+/* --- A. cancellazione semplice ------------------------------------ */
+{
+  const db = creaDatabase();
+  const A = creaDispositivo(db, new Map());
+  await A.apri();
+  await A.registra(T0);
+  eq('Delete A · prima della cancellazione la riga c\'è', conta(db), 1);
+  const esito = await A.kv.delete(CHIAVE);
+  ok('Delete A · la cancellazione riesce', esito.deleted === true);
+  eq('Delete A · e la riga non c\'è più', db.stato(), null);
+}
+
+/* --- B. modifica concorrente: la cancellazione NON deve passare ---- */
+/* È lo scenario obbligatorio: A ferma a una revisione vecchia, B che ha
+   scritto dopo. Prima il DELETE secco portava via anche il lavoro di B. */
+{
+  const db = creaDatabase();
+  const A = creaDispositivo(db, new Map());
+  const B = creaDispositivo(db, new Map());
+  await A.apri();
+  await A.registra(T0);                       // revisione 1
+  await B.apri();                             // B legge la revisione 1
+  await B.registra(T0 + 60000);               // revisione 2: A non l'ha mai vista
+
+  const revDiA = db.stato().rev;
+  const esito = await A.kv.delete(CHIAVE);
+
+  ok('Delete B · la cancellazione con una revisione vecchia viene abbandonata',
+    esito.annullata === true, JSON.stringify(esito));
+  ok('Delete B · la riga di B è ancora lì', db.stato() !== null);
+  eq('Delete B · e contiene tutte e due le sigarette', conta(db), 2);
+  eq('Delete B · la revisione non è stata toccata', db.stato().rev, revDiA);
+
+  /* Il dispositivo che ha chiesto la cancellazione ha buttato via la sua
+     copia locale: alla prima lettura deve riprendersi quello che c'è, non
+     restare vuoto. */
+  const ripreso = await A.apri();
+  eq('Delete B · e chi ha chiesto la cancellazione si riallinea', ripreso.cigs.length, 2);
+}
+
+/* --- C. cancellazione offline ------------------------------------- */
+{
+  const db = creaDatabase();
+  const disco = new Map();
+  const A = creaDispositivo(db, disco);
+  await A.apri();
+  await A.registra(T0);
+  db.online = false;
+  await A.kv.delete(CHIAVE);
+  ok('Delete C · offline la cancellazione resta in coda', A.inSospeso() === 1);
+  A.riavvia();                                // e sopravvive al refresh
+  db.online = true;
+  await A.svuota();
+  eq('Delete C · appena torna la rete la riga viene cancellata', db.stato(), null);
+  eq('Delete C · e la coda si svuota', A.inSospeso(), 0);
+}
+
+/* --- D. cancellazione offline + l'altro dispositivo registra ------- */
+{
+  const db = creaDatabase();
+  const A = creaDispositivo(db, new Map());
+  const B = creaDispositivo(db, new Map());
+  await A.apri();
+  await A.registra(T0);
+  await B.apri();
+
+  db.online = false;
+  await A.kv.delete(CHIAVE);                  // A cancella, al buio
+  db.online = true;
+  await B.registra(T0 + 60000);               // B intanto registra
+  await A.svuota();                           // A rientra e prova a consegnare
+
+  ok('Delete D · la sigaretta nuova di B non viene cancellata', db.stato() !== null);
+  ok('Delete D · e c\'è ancora', cigsDb(db).includes(T0 + 60000));
+  eq('Delete D · la coda non resta appesa a ritentare per sempre', A.inSospeso(), 0);
+}
+
+/* --- E. cancellazione di un evento + registrazione successiva ------ */
+{
+  const db = creaDatabase();
+  const A = creaDispositivo(db, new Map());
+  await A.apri();
+  await A.registra(T0);
+  const X = A.stato().eventi[0].id;
+  await A.eliminaId(X);
+  await A.registra(T0 + 60000);               // Y, dopo la cancellazione
+  eq('Delete E · resta solo Y', cigsDb(db), [T0 + 60000]);
+  ok('Delete E · e X resta cancellato', db.stato().value.rimossi.includes(X));
+  await A.apri();
+  eq('Delete E · anche dopo aver riaperto', A.stato().cigs, [T0 + 60000]);
+}
+
+/* --- F. cancellazione con lo stesso istante ------------------------ */
+{
+  const db = creaDatabase();
+  const A = creaDispositivo(db, new Map());
+  await A.apri();
+  await A.registra(1000);
+  await A.registra(1000);                     // stesso istante, altro evento
+  const [X, Y] = A.stato().eventi.map((e) => e.id);
+  eq('Delete F · due eventi allo stesso istante', conta(db), 2);
+  await A.eliminaId(X);
+  eq('Delete F · cancellato X, resta uno solo', conta(db), 1);
+  eq('Delete F · ed è Y', db.stato().value.eventi[0].id, Y);
+}
+
+/* --- G. cancellazione e etichette --------------------------------- */
+{
+  const db = creaDatabase();
+  const A = creaDispositivo(db, new Map());
+  await A.apri();
+  await A.registra(1000);
+  await A.registra(1000);
+  const [X, Y] = A.stato().eventi.map((e) => e.id);
+  await A.salva((d) => ({ ...d, tags: { ...d.tags, [X]: 'stress', [Y]: 'caffè' } }));
+  await A.eliminaId(X);
+  const finale = db.stato().value;
+  eq('Delete G · il motivo di X sparisce con X', finale.tags[X], undefined);
+  eq('Delete G · quello di Y resta', finale.tags[Y], 'caffè');
+}
+
+/* --- H. la stessa cancellazione ritentata più volte ---------------- */
+{
+  const db = creaDatabase();
+  const A = creaDispositivo(db, new Map());
+  await A.apri();
+  await A.registra(T0);
+  await A.registra(T0 + 60000);
+  const X = A.stato().eventi[0].id;
+  await A.eliminaId(X);
+  const testo = JSON.stringify(A.stato());
+  for (let i = 0; i < 5; i += 1) await A.kv.set(CHIAVE, testo);
+  eq('Delete H · cinque tentativi identici lasciano una sigaretta sola', conta(db), 1);
+  eq('Delete H · e X resta cancellato una volta sola',
+    db.stato().value.rimossi.filter((id) => id === X).length, 1);
+  eq('Delete H · l\'altra sigaretta non è stata toccata', cigsDb(db), [T0 + 60000]);
+}
+
+/* --- La cancellazione della chiave, ritentata più volte ------------ */
+{
+  const db = creaDatabase();
+  const A = creaDispositivo(db, new Map());
+  await A.apri();
+  await A.registra(T0);
+  await A.kv.delete(CHIAVE);
+  const dueVolte = await A.kv.delete(CHIAVE);
+  ok('Delete H · cancellare una riga che non c\'è più non è un errore',
+    dueVolte.deleted === true && !dueVolte.annullata, JSON.stringify(dueVolte));
+  eq('Delete H · e lo stato finale è lo stesso', db.stato(), null);
+}
+
+/* ================================================================== */
+/* 19. LE LAPIDI REGGONO A TUTTO                                       */
+/* ================================================================== */
+/* Il caso del punto 4, passo per passo: A registra X, B lo riceve, A lo
+   cancella, B resta offline per un po', B torna e si sincronizzano.
+   X non deve ricomparire. */
+{
+  const db = creaDatabase();
+  const discoB = new Map();
+  const A = creaDispositivo(db, new Map());
+  const B = creaDispositivo(db, discoB);
+  await A.apri();
+  await A.registra(T0);
+  const X = A.stato().eventi[0].id;
+  await B.apri();                               // B riceve X
+  ok('Lapidi · B ha ricevuto X', B.stato().cigs.length === 1);
+
+  await A.eliminaId(X);                         // A cancella X
+  db.online = false;
+  await B.registra(T0 + 60000);                 // B, offline, registra altro
+  B.riavvia();                                  // e nel frattempo si riavvia
+  db.online = true;
+  await B.apri();
+  await B.svuota();
+  await sistemato();
+
+  ok('Lapidi · X non ricompare dopo il rientro di B',
+    !cigsDb(db).includes(T0), JSON.stringify(cigsDb(db)));
+  ok('Lapidi · e quello che B ha registrato offline c\'è',
+    cigsDb(db).includes(T0 + 60000));
+
+  // e nemmeno su un dispositivo nuovo di zecca
+  const C = creaDispositivo(db, new Map());
+  const visto = await C.apri();
+  ok('Lapidi · nemmeno su un dispositivo appena installato',
+    !visto.cigs.includes(T0) && visto.cigs.includes(T0 + 60000));
+
+  // né rifondendo all'infinito in ordine casuale
+  let acc = normalizzaRegistro(db.stato().value, vuoto);
+  for (let i = 0; i < 20; i += 1) {
+    acc = fondiRegistri(acc, i % 3 === 0 ? A.stato() : B.stato(), vuoto);
+  }
+  ok('Lapidi · né dopo venti rifusioni in ordine misto', !acc.cigs.includes(T0));
+}
+
 
 /* ------------------------------------------------------------------ */
 

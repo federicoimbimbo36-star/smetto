@@ -20,9 +20,11 @@
 
 import {
   normalizzaRegistro, aggiungiEvento, aggiungiEventi, rimuoviEvento, timbra,
-  fondiRegistri, fondiValore,
+  fondiRegistri, fondiValore, idsAggiunti,
 } from '../src/utils/fusione.js';
-import { distribuisci, tappeDaRiavviare, togliLotto } from '../src/utils/arretrate.js';
+import {
+  distribuisci, tappeDaRiavviare, togliLotto, costruisciLotto,
+} from '../src/utils/arretrate.js';
 import { creaKvSincronizzato } from '../src/utils/sincronizza.js';
 
 let passati = 0;
@@ -65,14 +67,22 @@ function creaApp() {
         start: dati.start === null ? nuovi[0] : Math.min(dati.start, nuovi[0]),
         ...(riavvio === null ? {} : { tappeViste: { ref: riavvio, idx: [] } }),
       });
-      const ids = next.eventi.slice(primaDiTutto.eventi?.length || 0).map((e) => e.id);
-      return {
-        ids, ts: nuovi, quante: nuovi.length, quando: finestra.breve, riavvio, prima: primaDiTutto,
-      };
+      /* IL LOTTO LO COSTRUISCE LA FUNZIONE VERA.
+
+         Qui prima c'era una copia della riga di App.jsx:
+
+           next.eventi.slice(primaDiTutto.eventi?.length || 0)
+
+         cioe' questo banco si ricopiava il difetto che doveva scoprire, e
+         quindi non poteva scoprirlo. Un banco che riscrive la regola invece
+         di chiamarla verifica se stesso. */
+      return costruisciLotto(primaDiTutto, next, {
+        ts: nuovi, quando: finestra.breve, riavvio,
+      });
     },
     fuma(ts) {
       const next = aggiungiEvento(dati, 'cig', ts);
-      const id = next.eventi[next.eventi.length - 1].id;
+      const id = idsAggiunti(dati, next)[0];
       this.salva({ ...next, start: dati.start ?? ts, tappeViste: { ref: ts, idx: [] } });
       return id;
     },
@@ -188,6 +198,112 @@ eq('4 · le tappe restano quelle della sigaretta indipendente, non del lotto',
   eq('sync · rifondendo con la versione vecchia restano due', rifuso.cigs.length, 2);
   ok('sync · il lotto non torna indietro',
     l.ids.every((id) => !rifuso.eventi.some((e) => e.id === id)));
+}
+
+/* ================================================================== */
+/* 4. LE ARRETRATE DI IERI                                             */
+/*                                                                     */
+/* Il caso che il banco vecchio non poteva vedere, perche' si ricopiava */
+/* la riga di App.jsx invece di chiamarla, e perche' provava solo       */
+/* finestre PIU' RECENTI della sigaretta gia' registrata — dove la      */
+/* posizione, per caso, coincide con l'identita'.                       */
+/*                                                                     */
+/* Qui la finestra e' IERI e le sigarette gia' registrate sono di OGGI. */
+/* `aggiungiEvento` riordina per istante, quindi le tre arretrate       */
+/* finiscono IN MEZZO alla lista e non in fondo: prendendo gli ultimi   */
+/* tre per posizione si prendevano le sigarette di oggi. «Annulla»      */
+/* seppelliva quelle — con la lapide, quindi nemmeno recuperabili dal   */
+/* database — e lasciava dentro le arretrate.                           */
+/* ================================================================== */
+{
+  const c = creaApp();
+  const oggiPresto = adesso - 6 * 3600000;
+  const oggiTardi = adesso - 2 * 3600000;
+  const idOggi1 = c.fuma(oggiPresto);
+  const idOggi2 = c.fuma(oggiTardi);
+  eq('ieri · due sigarette di oggi gia\' registrate', c.stato().cigs.length, 2);
+
+  /* la finestra «Ieri» come la costruisce arretrate.finestre() */
+  const ieri = new Date(adesso - 86400000);
+  const alle = (h) => { const d = new Date(ieri); d.setHours(h, 0, 0, 0); return d.getTime(); };
+  const finestraIeri = { id: 'ieri', breve: 'ieri', da: alle(8), a: alle(23) };
+
+  const l = c.arretrate(3, finestraIeri);
+  eq('ieri · tre arretrate aggiunte', c.stato().cigs.length, 5);
+
+  /* il controllo che inchioda il difetto: gli identificativi del lotto
+     devono essere quelli aggiunti, non gli ultimi tre della lista */
+  const ultimiTrePerPosizione = c.stato().eventi.slice(-3).map((e) => e.id);
+  ok('ieri · gli ids del lotto NON sono gli ultimi tre per posizione',
+    !ultimiTrePerPosizione.every((id) => l.ids.includes(id)),
+    'il lotto ha preso gli eventi per posizione invece che per identita\'');
+  ok('ieri · nessuna sigaretta di oggi e\' finita nel lotto',
+    !l.ids.includes(idOggi1) && !l.ids.includes(idOggi2),
+    `ids del lotto: ${l.ids.join(', ')}`);
+  ok('ieri · gli istanti del lotto sono tutti di ieri',
+    l.ts.every((t) => t >= finestraIeri.da && t <= finestraIeri.a));
+
+  const d = c.salva(togliLotto(c.stato(), l, rimuoviEvento));
+
+  eq('ieri · dopo l\'annullamento restano le due di oggi', d.cigs.length, 2);
+  ok('ieri · LA PRIMA SIGARETTA DI OGGI C\'E\' ANCORA',
+    d.eventi.some((e) => e.id === idOggi1));
+  ok('ieri · LA SECONDA SIGARETTA DI OGGI C\'E\' ANCORA',
+    d.eventi.some((e) => e.id === idOggi2));
+  ok('ieri · nessuna sigaretta di oggi e\' stata seppellita',
+    !d.rimossi.includes(idOggi1) && !d.rimossi.includes(idOggi2),
+    'una lapide su una sigaretta vera non si toglie piu\'');
+  ok('ieri · le tre arretrate sono sparite davvero',
+    l.ts.every((t) => !d.cigs.includes(t)),
+    `restano ${d.cigs.length} sigarette: ${d.cigs.join(', ')}`);
+  ok('ieri · e hanno una lapide ciascuna',
+    l.ids.every((id) => d.rimossi.includes(id)));
+
+  /* e la fusione non le rimette dentro */
+  const rifuso = fondiRegistri(d, c.stato(), vuoto);
+  eq('ieri · dopo una rifusione restano due sigarette', rifuso.cigs.length, 2);
+}
+
+/* ================================================================== */
+/* 5. UN SOLO EVENTO, LO STESSO MILLISECONDO                           */
+/*                                                                     */
+/* Stessa regola, applicata alla registrazione singola. `App.jsx`       */
+/* leggeva `next.eventi[next.eventi.length - 1].id` per sapere cosa     */
+/* aveva appena registrato, e a parita' di istante l'ordine lo decide   */
+/* l'identificativo: un evento arrivato dall'altro dispositivo con lo   */
+/* stesso millisecondo puo' finire dopo. La finestra dei 25 secondi si  */
+/* ritrovava l'id sbagliato, e «Annulla» cancellava la sigaretta        */
+/* dell'ALTRO telefono lasciando dentro questa.                         */
+/*                                                                     */
+/* Due istanti uguali non sono un'ipotesi: `distribuisci` e' una        */
+/* funzione pura, e due dispositivi che segnano «ieri, 10 sigarette»    */
+/* producono dieci istanti identici al millisecondo.                    */
+/* ================================================================== */
+{
+  const ts = adesso - 3600000;
+  /* l'evento gia' presente ha un identificativo che ordina DOPO             
+     qualsiasi UUID generato adesso, quindi il difetto e' deterministico */
+  const arrivatoDaAltroDispositivo = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+  let d = normalizzaRegistro(vuoto(), vuoto);
+  d = aggiungiEvento(d, 'cig', ts, arrivatoDaAltroDispositivo);
+
+  const next = aggiungiEvento(d, 'cig', ts);
+  const perPosizione = next.eventi[next.eventi.length - 1].id;
+  const perIdentita = idsAggiunti(d, next)[0];
+
+  eq('stesso ms · due eventi distinti, non uno', next.eventi.length, 2);
+  eq('stesso ms · per posizione si prendeva quello dell\'altro dispositivo',
+    perPosizione, arrivatoDaAltroDispositivo);
+  ok('stesso ms · idsAggiunti prende quello appena registrato',
+    perIdentita !== arrivatoDaAltroDispositivo && perIdentita !== undefined,
+    `ha restituito ${perIdentita}`);
+  eq('stesso ms · e ne prende UNO SOLO', idsAggiunti(d, next).length, 1);
+
+  /* la conseguenza vera: annullare la registrazione appena fatta */
+  const dopoAnnulla = rimuoviEvento(next, perIdentita);
+  ok('stesso ms · annullando resta la sigaretta dell\'altro dispositivo',
+    dopoAnnulla.eventi.some((e) => e.id === arrivatoDaAltroDispositivo));
+  eq('stesso ms · e ne resta una sola', dopoAnnulla.cigs.length, 1);
 }
 
 console.log('');

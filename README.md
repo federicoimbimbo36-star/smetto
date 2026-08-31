@@ -18,7 +18,7 @@ quello lo puoi aprire dal telefono, se è sulla stessa rete di casa.
 npm run build     # produce dist/
 npm run preview   # serve dist/ come in produzione
 npm run lint
-npm run verifica  # calcoli + persistenza + interfaccia: 1368 controlli
+npm run verifica  # calcoli + persistenza + interfaccia: 1448 controlli
 ```
 
 `npm run verifica` gira con Node puro, senza installare niente, e fa tre giri.
@@ -34,7 +34,7 @@ Percorso — ed è scritto in modo da **fallire** con il codice di prima. Deve g
 altrimenti quelli sull'ora legale non provano niente; lo script imposta il fuso
 da solo.
 
-`verifica/persistenza.mjs` (56) controlla che **i dati non spariscano**. Non
+`verifica/persistenza.mjs` (133) controlla che **i dati non spariscano**. Non
 mima una rete che funziona: costruisce un database finto che fa i dispetti veri
 — risponde in ritardo, non risponde affatto, risponde quando ormai qualcun altro
 ha scritto — e due dispositivi che ci parlano insieme. Due telefoni con cento
@@ -44,9 +44,20 @@ risposta lenta non deve poter cancellare quello che è stato scritto nel
 frattempo; una sigaretta cancellata non deve tornare dall'altro dispositivo. In
 fondo c'è un banco a centoventi mosse casuali fra due dispositivi che vanno e
 vengono dalla rete: alla fine il conto deve tornare esatto. Con il codice di
-prima ne fallivano **15**. Vedi `PERSISTENZA.md`.
+prima ne fallivano **15**.
 
-`verifica/redesign.mjs` (1001) controlla l'**interfaccia**: tag JSX e parentesi
+La seconda metà del file riguarda l'**identità degli eventi**: due sigarette
+allo stesso millisecondo devono restare due, e la stessa sigaretta ritrasmessa
+dieci volte deve restare una. Con l'identità vecchia — il millisecondo — ne
+fallivano **19**, e nel banco più duro (sessanta registrazioni distribuite su
+tre soli istanti) ne sopravvivevano tre.
+
+L'ultima sezione riguarda la **cancellazione**: `aggiorna` dichiarava da quale
+revisione partiva, `cancella` no, quindi una cancellazione con una revisione
+vecchia poteva portarsi via il lavoro di un altro dispositivo. Con il DELETE
+secco di prima ne fallivano **7**. Vedi `PERSISTENZA.md`.
+
+`verifica/redesign.mjs` (1004) controlla l'**interfaccia**: tag JSX e parentesi
 bilanciate, componenti importati davvero, import mai usati, costanti usate prima
 di essere dichiarate, ogni classe scritta nel markup esistente in `styles.css`
 (e viceversa), contrasto WCAG AA di ogni coppia testo/fondo, bersagli tattili da
@@ -66,7 +77,7 @@ src/
 ├─ windowStorage.js        la sola copia locale (Capacitor Preferences o localStorage)
 ├─ notificheTappe.js       notifiche programmate delle tappe
 ├─ utils/    format.js · storage.js · conti.js (risparmi e minuti di vita)
-│            fusione.js (come si fondono due copie del registro)
+│            fusione.js (identità degli eventi e fusione di due copie)
 │            sincronizza.js (revisioni, coda, tentativi — staccato dal browser
 │                            apposta, così si può verificare davvero)
 │            arretrate.js (sigarette segnate in ritardo)
