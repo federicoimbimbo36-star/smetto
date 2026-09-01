@@ -109,6 +109,18 @@ const localAuth = {
     await writeStore(AUTH_KEY, db);
     return {};
   },
+
+  /* Stessa interfaccia di supabaseAuth, così App.jsx non deve sapere
+     quale dei due backend ha sotto. Qui la sessione è già una riga sola
+     su questo dispositivo, quindi «locale» e «globale» coincidono. */
+  async signOutLocale() {
+    return this.signOut();
+  },
+
+  async haSessione() {
+    const db = await readStore(AUTH_KEY, vuotoAuth);
+    return Boolean(db.session && db.users[db.session]);
+  },
   async updateProfile(id, patch) {
     const db = await readStore(AUTH_KEY, vuotoAuth);
     if (!db.users[id]) return { error: 'utente inesistente' };

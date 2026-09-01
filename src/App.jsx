@@ -15,8 +15,8 @@ import {
 import auth from './auth';
 import { eliminaAccount } from './utils/account';
 import { creaSequenza, caricaSessione } from './utils/sessione';
-import { creaCanaleAuth } from './utils/canaleAuth';
-import { eseguiLogout } from './utils/logout';
+import { creaCanaleAuth, creaGuardiaRisveglio } from './utils/canaleAuth';
+import { eseguiLogout, creaUscitaAnnunciata } from './utils/logout';
 import {
   codiciDopoSync, gruppiDopoSync, membriDopoSync, attivoDopoSync, statoDopoSync,
 } from './utils/gruppiSync';
@@ -180,6 +180,8 @@ export default function App() {
   const sequenzaRef = useRef(null);
   if (!sequenzaRef.current) sequenzaRef.current = creaSequenza();
   const canaleRef = useRef(null);
+  const guardiaRef = useRef(null);
+  const uscitaAnnunciataRef = useRef(null);
 
   function showToast(msg) {
     setToast(msg);
@@ -398,14 +400,58 @@ export default function App() {
   /*  Fra browser e dispositivi diversi non cambia niente: questo canale */
   /*  parla solo dentro lo stesso browser.                               */
   /* ------------------------------------------------------------------ */
+  /* ------------------------------------------------------------------ */
+  /*  ...E NON BASTA IL CANALE, SU IPHONE                                */
+  /*                                                                     */
+  /*  Provato in Safari su iPhone, due schede normali, stesso account:    */
+  /*  la seconda continuava a funzionare. Il canale non era rotto — non   */
+  /*  veniva proprio raggiunto. Safari su iOS congela le schede di        */
+  /*  sfondo, e una pagina congelata non riceve né i messaggi di          */
+  /*  `BroadcastChannel` né gli eventi `storage`; al risveglio non le     */
+  /*  vengono riconsegnati, perché erano avvisi in tempo reale.           */
+  /*                                                                     */
+  /*  E `auth-js` al risveglio non dice niente: rilegge la sessione da    */
+  /*  localStorage, non la trova (l'ha tolta l'altra scheda), e torna     */
+  /*  con un `return` senza passare da `_removeSession()` — che è         */
+  /*  l'unico posto da cui esce `SIGNED_OUT`. `onAuthChange` resta muto.  */
+  /*                                                                     */
+  /*  Quindi due pezzi, e servono tutti e due:                            */
+  /*                                                                     */
+  /*   · quando l'annuncio ARRIVA (schede sveglie, stesso browser) la     */
+  /*     scheda cancella la PROPRIA sessione locale e poi si resetta —    */
+  /*     non solo la seconda cosa, come faceva prima;                     */
+  /*   · quando l'annuncio NON arriva (scheda sospesa) la scheda, appena  */
+  /*     torna in primo piano, va a controllare da sé.                    */
+  /*                                                                     */
+  /*  In tutti e due i casi si esce con `scope: 'local'`: si cancella la  */
+  /*  sessione di QUESTA scheda e non si revoca niente sul server, così   */
+  /*  l'altro telefono della stessa persona — che con questo logout non   */
+  /*  c'entra — resta dentro. Fra browser e dispositivi diversi non       */
+  /*  cambia niente.                                                      */
+  /* ------------------------------------------------------------------ */
   useEffect(() => {
-    canaleRef.current = creaCanaleAuth({
-      onLogout: () => {
-        if (!userRef.current && !datiRef.current) return;   // già usciti
-        resetAuthState();
-      },
+    const ricevi = creaUscitaAnnunciata({
+      signOutLocale: () => (auth.signOutLocale ? auth.signOutLocale() : auth.signOut()),
+      reset: resetAuthState,
+      dentro: () => Boolean(userRef.current || datiRef.current),
     });
-    return () => { canaleRef.current?.chiudi(); canaleRef.current = null; };
+    uscitaAnnunciataRef.current = ricevi;
+
+    canaleRef.current = creaCanaleAuth({ onLogout: () => { ricevi(); } });
+
+    guardiaRef.current = creaGuardiaRisveglio({
+      dentro: () => Boolean(userRef.current || datiRef.current),
+      haSessione: async () => (auth.haSessione
+        ? auth.haSessione()
+        : Boolean(await auth.getSession())),
+      suSessioneAssente: () => ricevi(),
+    });
+
+    return () => {
+      canaleRef.current?.chiudi(); canaleRef.current = null;
+      guardiaRef.current?.chiudi(); guardiaRef.current = null;
+      uscitaAnnunciataRef.current = null;
+    };
   }, []);
 
   useEffect(() => {
@@ -416,7 +462,18 @@ export default function App() {
       const idPrima = userRef.current;
       if (idOra === idPrima) return;          // rinnovo del token: non è successo niente
 
-      if (!idOra) { resetAuthState(); return; }
+      /* UNA SOLA STRADA PER USCIRE.
+
+         Cancellando la sessione locale, questa scheda si manda da sola un
+         `SIGNED_OUT`: se qui ci fosse ancora un `resetAuthState()` diretto,
+         il reset sarebbe due — quello di `ricevi()` e questo. Passando
+         dalla stessa sequenza, la guardia `inCorso` li fa diventare uno.
+         Vale anche per la sessione che scade da sé: la strada è una. */
+      if (!idOra) {
+        if (uscitaAnnunciataRef.current) uscitaAnnunciataRef.current();
+        else resetAuthState();
+        return;
+      }
       if (!idPrima) return;                   // l'accesso da questa scheda lo gestisce già chi l'ha fatto
 
       /* È ENTRATO UN ALTRO ACCOUNT: via tutto e si ricarica il suo.

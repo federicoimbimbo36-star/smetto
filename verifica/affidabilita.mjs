@@ -16,8 +16,9 @@ import { creaSequenza, caricaSessione } from '../src/utils/sessione.js';
 import {
   codiciDopoSync, gruppiDopoSync, membriDopoSync, attivoDopoSync, statoDopoSync,
 } from '../src/utils/gruppiSync.js';
-import { creaCanaleAuth, CHIAVE_CANALE } from '../src/utils/canaleAuth.js';
-import { eseguiLogout } from '../src/utils/logout.js';
+import { creaCanaleAuth, creaGuardiaRisveglio, CHIAVE_CANALE } from '../src/utils/canaleAuth.js';
+import { eseguiLogout, creaUscitaAnnunciata } from '../src/utils/logout.js';
+import { GoTrueClient } from '@supabase/auth-js';
 
 let passati = 0;
 const falliti = [];
@@ -682,8 +683,11 @@ const T = 1_700_000_000_000;
   ok('sessione · e restituisce come staccarsi',
     /unsubscribe/.test(sorgenti.supabase));
   ok('sessione · App.jsx ascolta i cambi', /auth\.onAuthChange\(/.test(app));
+  /* La sessione che se ne va porta ancora alla schermata di accesso, ma
+     passando dalla sequenza condivisa: così il reset resta uno solo anche
+     quando è la cancellazione locale a farlo scattare. */
   ok('sessione · e se la sessione se ne va torna all\'accesso',
-    /if\s*\(!idOra\)\s*\{\s*resetAuthState\(\);/.test(app));
+    /if\s*\(!idOra\)\s*\{[\s\S]{0,240}uscitaAnnunciataRef\.current\(\);[\s\S]{0,120}resetAuthState\(\);/.test(app));
   ok('sessione · un rinnovo del token non fa niente',
     /if\s*\(idOra === idPrima\)\s*return;/.test(app),
     'senza questo, ogni rinnovo del token ricaricherebbe tutto');
@@ -1562,12 +1566,785 @@ const T = 1_700_000_000_000;
     ok('uscita · e non chiama più signOut per conto suo',
       !/await auth\.signOut\(\);/.test(app));
     ok('uscita · il canale fra schede è agganciato', /creaCanaleAuth\(\{/.test(app));
-    ok('uscita · chi riceve il logout usa lo stesso reset del logout locale',
-      /onLogout:[\s\S]{0,160}resetAuthState\(\)/.test(app));
+    ok('uscita · chi riceve il logout passa dalla sequenza che pulisce la sessione',
+      /creaUscitaAnnunciata\(\{/.test(app) && /onLogout:[\s\S]{0,80}ricevi\(\)/.test(app));
+    ok('uscita · e la sequenza cancella la sessione LOCALE, non quella globale',
+      /signOutLocale:[\s\S]{0,120}auth\.signOutLocale\(\)/.test(app));
+    ok('uscita · la guardia al risveglio è agganciata', /creaGuardiaRisveglio\(\{/.test(app));
+    ok('uscita · e non resta nessun reset diretto sull\'annuncio',
+      !/onLogout:[\s\S]{0,120}resetAuthState\(\)/.test(app));
     ok('uscita · e il canale viene chiuso allo smontaggio', /canaleRef\.current\?\.chiudi\(\)/.test(app));
+    ok('uscita · e anche la guardia', /guardiaRef\.current\?\.chiudi\(\)/.test(app));
 
     const sa = readFileSync(resolve(process.cwd(), 'src/auth/supabaseAuth.js'), 'utf8');
     ok('uscita · supabaseAuth restituisce l\'errore', /return error \?/.test(sa));
+    ok('uscita · supabaseAuth sa uscire solo da questo dispositivo',
+      /signOut\(\{ scope: 'local' \}\)/.test(sa));
+    ok('uscita · e sa dire se una sessione c\'è, senza leggere il profilo',
+      /async haSessione\(\)/.test(sa));
+
+    const la = readFileSync(resolve(process.cwd(), 'src/auth/localAuth.js'), 'utf8');
+    ok('uscita · anche il backend locale ha la stessa interfaccia',
+      /async signOutLocale\(\)/.test(la) && /async haSessione\(\)/.test(la));
+  }
+}
+
+/* ================================================================== */
+/* 10. LA SCHEDA B SU IPHONE: PERCHÉ CONTINUAVA A FUNZIONARE           */
+/*                                                                     */
+/* Provato in Safari su iPhone, due schede normali, stesso account,     */
+/* stesso dominio: logout nella scheda A, e la scheda B continuava a    */
+/* funzionare. La correzione precedente non bastava, per due motivi     */
+/* distinti che vanno provati separatamente.                            */
+/*                                                                     */
+/* PRIMO — l'annuncio non arriva. Safari su iOS congela le schede di    */
+/* sfondo: una pagina congelata non riceve né i messaggi di             */
+/* `BroadcastChannel` né gli eventi `storage`, e al risveglio non le    */
+/* vengono riconsegnati. Il canale non era rotto: non veniva            */
+/* raggiunto.                                                           */
+/*                                                                     */
+/* SECONDO — e `auth-js` al risveglio tace. `_recoverAndRefresh()`      */
+/* rilegge la sessione da localStorage; quando non c'è più (l'ha tolta  */
+/* l'altra scheda) fa `return` senza passare da `_removeSession()`,     */
+/* che è l'unico posto da cui esce `SIGNED_OUT`. Quindi `onAuthChange`  */
+/* resta muto e niente resetta l'interfaccia.                           */
+/*                                                                     */
+/* La prova qui sotto NON usa un finto Supabase: monta due `GoTrueClient` */
+/* veri di `@supabase/auth-js` sullo stesso localStorage — che è come   */
+/* stanno due schede dello stesso browser — e mostra il silenzio con    */
+/* codice in esecuzione. Poi verifica che la correzione lo copra, e     */
+/* soprattutto che RIAPRENDO la scheda B la sessione non ci sia più.    */
+/* ================================================================== */
+{
+  /* --- un localStorage solo per due schede, come nel browser vero --- */
+  const creaStorageCondiviso = () => {
+    const memoria = new Map();
+    return {
+      memoria,
+      adattatore: {
+        getItem: (k) => (memoria.has(k) ? memoria.get(k) : null),
+        setItem: (k, v) => { memoria.set(k, v); },
+        removeItem: (k) => { memoria.delete(k); },
+      },
+    };
+  };
+
+  const CHIAVE_SESSIONE = 'sb-prova-auth-token';
+  const seiOreDopo = Math.floor(Date.now() / 1000) + 3600;
+  const sessioneFinta = {
+    access_token: 'token-di-prova',
+    refresh_token: 'rinnovo-di-prova',
+    token_type: 'bearer',
+    expires_in: 3600,
+    expires_at: seiOreDopo,
+    user: {
+      id: 'utente-1', aud: 'authenticated', app_metadata: {}, user_metadata: {},
+      created_at: '2026-01-01T00:00:00Z',
+    },
+  };
+
+  /* Nessuna rete: il logout di `auth-js` chiama `/logout` sul server, e
+     qui risponde questo. Serve a provare la sequenza, non Supabase. */
+  const senzaRete = async () => new Response('{}', {
+    status: 200, headers: { 'content-type': 'application/json' },
+  });
+
+  /* Aprire una scheda: `senzaCanale` è la scheda di sfondo di iOS, quella
+     che il messaggio non lo riceve. Si toglie `BroadcastChannel` solo per
+     il momento della costruzione, che è quando `auth-js` lo aggancia. */
+  const apriScheda = (adattatore, { senzaCanale = false } = {}) => {
+    const vero = globalThis.BroadcastChannel;
+    if (senzaCanale) delete globalThis.BroadcastChannel;
+    let client;
+    try {
+      client = new GoTrueClient({
+        url: 'http://localhost/auth/v1',
+        storageKey: CHIAVE_SESSIONE,
+        storage: adattatore,
+        persistSession: true,
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+        fetch: senzaRete,
+      });
+    } finally {
+      if (senzaCanale) globalThis.BroadcastChannel = vero;
+    }
+    const eventi = [];
+    client.onAuthStateChange((e) => eventi.push(e));
+    return { client, eventi };
+  };
+
+  /* Lo strato `auth` dell'app, sopra un client vero: le stesse due
+     funzioni che App.jsx chiama in produzione. */
+  const authSopra = (client) => ({
+    signOutLocale: async () => {
+      const { error } = await client.signOut({ scope: 'local' });
+      return error ? { error: error.message } : {};
+    },
+    haSessione: async () => {
+      const { data } = await client.getSession();
+      return Boolean(data?.session?.user);
+    },
+  });
+
+  const respira = () => new Promise((r) => setTimeout(r, 30));
+
+  /* ---------------------------------------------------------------- */
+  /* --- 1. IL DIFETTO, riprodotto: B non riceve nessun SIGNED_OUT --- */
+  /* ---------------------------------------------------------------- */
+  {
+    const { memoria, adattatore } = creaStorageCondiviso();
+    memoria.set(CHIAVE_SESSIONE, JSON.stringify(sessioneFinta));
+
+    const A = apriScheda(adattatore);
+    const B = apriScheda(adattatore, { senzaCanale: true });   // scheda sospesa
+    await A.client.initialize();
+    await B.client.initialize();
+    /* `INITIAL_SESSION` arriva da solo poco dopo l'aggancio: si aspetta e
+       si azzera, così quello che resta è solo ciò che riguarda il logout. */
+    await respira();
+    B.eventi.length = 0;
+
+    await A.client.signOut();
+    await respira();
+
+    eq('iphone · dopo il logout di A la chiave non è più in localStorage',
+      memoria.get(CHIAVE_SESSIONE) ?? null, null);
+    ok('iphone · e alla scheda sospesa non arriva NIENTE dal canale',
+      !B.eventi.includes('SIGNED_OUT'));
+
+    /* L'utente torna sulla scheda B: è quello che fa `auth-js` da solo. */
+    await B.client._recoverAndRefresh();
+    ok('iphone · CAUSA · nemmeno al risveglio auth-js emette SIGNED_OUT',
+      !B.eventi.includes('SIGNED_OUT'));
+    ok('iphone · CAUSA · quindi onAuthChange resta muto e niente resetta',
+      B.eventi.length === 0);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* --- 2. LA CORREZIONE: la guardia al risveglio pulisce la B ------ */
+  /* ---------------------------------------------------------------- */
+  {
+    const { memoria, adattatore } = creaStorageCondiviso();
+    memoria.set(CHIAVE_SESSIONE, JSON.stringify(sessioneFinta));
+
+    const A = apriScheda(adattatore);
+    const B = apriScheda(adattatore, { senzaCanale: true });
+    await A.client.initialize();
+    await B.client.initialize();
+
+    const schermo = { dentro: true, reset: 0 };
+    const authB = authSopra(B.client);
+    const ricevi = creaUscitaAnnunciata({
+      signOutLocale: authB.signOutLocale,
+      reset: () => { schermo.reset += 1; schermo.dentro = false; },
+      dentro: () => schermo.dentro,
+    });
+    const guardia = creaGuardiaRisveglio({
+      ambiente: {}, documento: null,
+      dentro: () => schermo.dentro,
+      haSessione: authB.haSessione,
+      suSessioneAssente: ricevi,
+    });
+
+    /* finché la sessione c'è, il risveglio non deve buttare fuori nessuno */
+    eq('iphone · con la sessione ancora buona il risveglio non tocca niente',
+      await guardia.controlla(), 'sessione presente');
+    eq('iphone · e nessun reset', schermo.reset, 0);
+
+    await A.client.signOut();
+    await respira();
+
+    eq('iphone · al risveglio dopo il logout la guardia ripulisce',
+      await guardia.controlla(), 'ripulita');
+    eq('iphone · con UN solo reset dell\'interfaccia', schermo.reset, 1);
+
+    /* --- 3. LA PROVA CHE MANCAVA: si RIAPRE la scheda B --- */
+    const riaperta = apriScheda(adattatore);
+    await riaperta.client.initialize();
+    const { data } = await riaperta.client.getSession();
+    eq('iphone · RIAPRENDO la scheda B, getSession() è null', data.session, null);
+    eq('iphone · e in localStorage non è rimasto niente',
+      memoria.get(CHIAVE_SESSIONE) ?? null, null);
+
+    /* un secondo risveglio non deve rifare niente */
+    eq('iphone · il risveglio successivo trova già tutto fatto',
+      await guardia.controlla(), 'già fuori');
+    eq('iphone · e non resetta una seconda volta', schermo.reset, 1);
+    guardia.chiudi();
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* --- 4. L'ANNUNCIO CHE ARRIVA: B cancella la sessione E resetta -- */
+  /*                                                                  */
+  /* Il caso delle due schede sveglie. Prima qui si eseguiva solo      */
+  /* `resetAuthState()`: la sessione della scheda B non veniva toccata */
+  /* e il suo client restava convinto di essere dentro.                */
+  /* ---------------------------------------------------------------- */
+  {
+    const { memoria, adattatore } = creaStorageCondiviso();
+    memoria.set(CHIAVE_SESSIONE, JSON.stringify(sessioneFinta));
+
+    const B = apriScheda(adattatore, { senzaCanale: true });
+    await B.client.initialize();
+
+    const ordine = [];
+    const schermo = { dentro: true };
+    const authB = authSopra(B.client);
+    const ricevi = creaUscitaAnnunciata({
+      signOutLocale: async () => { ordine.push('sessione'); return authB.signOutLocale(); },
+      reset: () => { ordine.push('reset'); schermo.dentro = false; },
+      dentro: () => schermo.dentro,
+    });
+
+    eq('annuncio · la scheda B esce', await ricevi(), 'uscito');
+    eq('annuncio · prima la sessione, poi l\'interfaccia', ordine.join(' → '), 'sessione → reset');
+    eq('annuncio · e la sessione locale non c\'è più', await authB.haSessione(), false);
+
+    const riaperta = apriScheda(adattatore);
+    await riaperta.client.initialize();
+    eq('annuncio · riaprendo la scheda B, getSession() è null',
+      (await riaperta.client.getSession()).data.session, null);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* --- 5. IL CANALE, con la sequenza vera attaccata ----------------- */
+  /*                                                                  */
+  /* Le prove della sezione 9 contavano un reset finto. Queste contano */
+  /* la sessione: `ricevi` è la stessa funzione che monta App.jsx.     */
+  /* ---------------------------------------------------------------- */
+  {
+    const creaBrowser = ({ conBroadcast = true } = {}) => {
+      const canali = new Map();
+      const memoria = new Map();
+      const schede = [];
+
+      class FintoCanale {
+        constructor(nome) {
+          this.nome = nome; this.chiuso = false; this.onmessage = null;
+          if (!canali.has(nome)) canali.set(nome, []);
+          canali.get(nome).push(this);
+        }
+
+        postMessage(dato) {
+          canali.get(this.nome).forEach((c) => {
+            if (c !== this && !c.chiuso) c.onmessage?.({ data: dato });
+          });
+        }
+
+        close() { this.chiuso = true; }
+      }
+
+      return {
+        apriScheda(nome, { sessionePulibile = true } = {}) {
+          const ascoltatori = [];
+          const ambiente = {
+            addEventListener: (t, fn) => { if (t === 'storage') ascoltatori.push(fn); },
+            removeEventListener: (t, fn) => {
+              const i = ascoltatori.indexOf(fn); if (i >= 0) ascoltatori.splice(i, 1);
+            },
+            localStorage: {
+              setItem(chiave, valore) {
+                const prima = memoria.get(chiave) ?? null;
+                memoria.set(chiave, valore);
+                if (prima === valore) return;
+                schede.forEach((s) => {
+                  if (s.nome === nome) return;
+                  s.ascoltatori.slice().forEach((fn) => fn({ key: chiave, newValue: valore }));
+                });
+              },
+              getItem: (k) => memoria.get(k) ?? null,
+            },
+          };
+          if (conBroadcast) ambiente.BroadcastChannel = FintoCanale;
+
+          const scheda = {
+            nome, ascoltatori, ambiente, dentro: true,
+            reset: 0, sessioniCancellate: 0, annunci: 0,
+          };
+          scheda.ricevi = creaUscitaAnnunciata({
+            signOutLocale: async () => {
+              scheda.sessioniCancellate += 1;
+              return sessionePulibile ? {} : { error: 'storage negato' };
+            },
+            reset: () => { scheda.reset += 1; scheda.dentro = false; },
+            dentro: () => scheda.dentro,
+          });
+          scheda.canale = creaCanaleAuth({
+            ambiente,
+            onLogout: () => { scheda.annunci += 1; scheda.ricevi(); },
+          });
+          schede.push(scheda);
+          return scheda;
+        },
+      };
+    };
+
+    /* --- logout da A: B cancella la sessione E l'interfaccia --- */
+    {
+      const browser = creaBrowser();
+      const a = browser.apriScheda('A');
+      const b = browser.apriScheda('B');
+      a.canale.annunciaLogout();
+      await respira();
+      eq('canale · B cancella la propria sessione locale', b.sessioniCancellate, 1);
+      eq('canale · e resetta l\'interfaccia', b.reset, 1);
+      eq('canale · la scheda A non tocca la propria sessione', a.sessioniCancellate, 0);
+      eq('canale · né si resetta da sola', a.reset, 0);
+    }
+
+    /* --- senza BroadcastChannel: dall'evento storage, uguale --- */
+    {
+      const browser = creaBrowser({ conBroadcast: false });
+      const a = browser.apriScheda('A');
+      const b = browser.apriScheda('B');
+      a.canale.annunciaLogout();
+      await respira();
+      eq('ripiego · senza BroadcastChannel la sessione di B viene cancellata lo stesso',
+        b.sessioniCancellate, 1);
+      eq('ripiego · e l\'interfaccia resettata', b.reset, 1);
+      eq('ripiego · chi annuncia non si risveglia da solo', a.reset, 0);
+    }
+
+    /* --- B NON riannuncia: nessun anello --- */
+    {
+      const browser = creaBrowser();
+      const a = browser.apriScheda('A');
+      const b = browser.apriScheda('B');
+      const c = browser.apriScheda('C');
+      a.canale.annunciaLogout();
+      await respira();
+      eq('anello · B non riannuncia niente', b.annunci, 1);
+      eq('anello · e C ha ricevuto un solo annuncio, non due', c.annunci, 1);
+      eq('anello · un reset a testa', `${b.reset}${c.reset}`, '11');
+    }
+
+    /* --- doppio segnale, un reset solo --- */
+    {
+      const browser = creaBrowser();
+      const a = browser.apriScheda('A');
+      const b = browser.apriScheda('B');
+      a.canale.annunciaLogout();
+      a.canale.annunciaLogout();          // due annunci DIVERSI, tutti e due consegnati
+      await respira();
+      eq('doppione · due segnali arrivano davvero', b.annunci, 2);
+      eq('doppione · ma la sessione si cancella una volta sola', b.sessioniCancellate, 1);
+      eq('doppione · e il reset è uno solo', b.reset, 1);
+    }
+
+    /* --- due segnali nello STESSO istante, mentre il primo è in volo --- */
+    {
+      let sblocca;
+      const attesa = new Promise((r) => { sblocca = r; });
+      const schermo = { dentro: true, reset: 0, cancellazioni: 0 };
+      const ricevi = creaUscitaAnnunciata({
+        signOutLocale: async () => { schermo.cancellazioni += 1; await attesa; return {}; },
+        reset: () => { schermo.reset += 1; schermo.dentro = false; },
+        dentro: () => schermo.dentro,
+      });
+      const primo = ricevi();
+      const secondo = ricevi();          // arriva mentre il primo non ha finito
+      sblocca();
+      await Promise.all([primo, secondo]);
+      eq('in volo · una sola cancellazione', schermo.cancellazioni, 1);
+      eq('in volo · un solo reset', schermo.reset, 1);
+    }
+
+    /* --- la cancellazione locale fallisce: si resetta lo stesso --- */
+    {
+      const browser = creaBrowser();
+      const a = browser.apriScheda('A');
+      const b = browser.apriScheda('B', { sessionePulibile: false });
+      a.canale.annunciaLogout();
+      await respira();
+      eq('guasto · l\'interfaccia viene ripulita anche se la sessione non si cancella',
+        b.reset, 1);
+    }
+    {
+      const schermo = { dentro: true, reset: 0 };
+      const ricevi = creaUscitaAnnunciata({
+        signOutLocale: async () => { throw new Error('storage negato'); },
+        reset: () => { schermo.reset += 1; schermo.dentro = false; },
+        dentro: () => schermo.dentro,
+      });
+      eq('guasto · e l\'esito lo dice invece di nasconderlo',
+        await ricevi(), 'uscito-con-sessione-sporca');
+      eq('guasto · con il reset comunque eseguito', schermo.reset, 1);
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* --- 6. LOGOUT FALLITO IN A: nessun falso messaggio, B resta ------ */
+  /* ---------------------------------------------------------------- */
+  {
+    const schermoA = { toast: null, errore: null, reset: 0, annunci: 0 };
+    const schermoB = { reset: 0, cancellazioni: 0 };
+    const riceviB = creaUscitaAnnunciata({
+      signOutLocale: async () => { schermoB.cancellazioni += 1; return {}; },
+      reset: () => { schermoB.reset += 1; },
+      dentro: () => true,
+    });
+
+    const esito = await eseguiLogout({
+      signOut: async () => ({ error: 'rete assente' }),
+      spegniNotifiche: async () => {},
+      reset: () => { schermoA.reset += 1; },
+      annuncia: () => { schermoA.annunci += 1; riceviB(); },
+      riuscito: () => { schermoA.toast = 'Hai effettuato il logout.'; },
+      fallito: () => { schermoA.errore = 'Non è stato possibile uscire. Controlla la rete e riprova.'; },
+    });
+    await respira();
+
+    eq('fallito · la sequenza si dichiara fallita', esito, 'errore');
+    eq('fallito · NESSUN «Hai effettuato il logout»', schermoA.toast, null);
+    ok('fallito · l\'utente viene avvisato', Boolean(schermoA.errore));
+    eq('fallito · la scheda A resta dentro', schermoA.reset, 0);
+    eq('fallito · nessun annuncio parte', schermoA.annunci, 0);
+    eq('fallito · quindi la scheda B non cancella niente', schermoB.cancellazioni, 0);
+    eq('fallito · e non si resetta', schermoB.reset, 0);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* --- 7. LA GUARDIA NON È UN INTERRUTTORE GENERALE ----------------- */
+  /*                                                                  */
+  /* Sbagliare qui vorrebbe dire buttare fuori chi è legittimamente    */
+  /* dentro. Tre casi in cui NON deve succedere niente.                */
+  /* ---------------------------------------------------------------- */
+  {
+    /* la sessione c'è: non si tocca */
+    {
+      let ripuliture = 0;
+      const g = creaGuardiaRisveglio({
+        ambiente: {}, documento: null,
+        dentro: () => true,
+        haSessione: async () => true,
+        suSessioneAssente: () => { ripuliture += 1; },
+      });
+      eq('guardia · con la sessione presente non fa niente', await g.controlla(), 'sessione presente');
+      eq('guardia · e nessuna ripulitura', ripuliture, 0);
+    }
+
+    /* il controllo non riesce (storage negato, promessa rifiutata):
+       nel dubbio si resta dentro, non si butta fuori nessuno */
+    {
+      let ripuliture = 0;
+      const g = creaGuardiaRisveglio({
+        ambiente: {}, documento: null,
+        dentro: () => true,
+        haSessione: async () => { throw new Error('storage negato'); },
+        suSessioneAssente: () => { ripuliture += 1; },
+      });
+      eq('guardia · se il controllo fallisce non butta fuori nessuno',
+        await g.controlla(), 'incerto');
+      eq('guardia · nessuna ripulitura', ripuliture, 0);
+    }
+
+    /* già fuori: non c'è niente da difendere */
+    {
+      let letture = 0;
+      const g = creaGuardiaRisveglio({
+        ambiente: {}, documento: null,
+        dentro: () => false,
+        haSessione: async () => { letture += 1; return false; },
+        suSessioneAssente: () => {},
+      });
+      eq('guardia · a schermata di accesso non controlla nemmeno',
+        await g.controlla(), 'già fuori');
+      eq('guardia · nessuna lettura della sessione', letture, 0);
+    }
+
+    /* dopo `chiudi()` non fa più niente, anche se l'evento arriva tardi */
+    {
+      let ripuliture = 0;
+      const g = creaGuardiaRisveglio({
+        ambiente: {}, documento: null,
+        dentro: () => true,
+        haSessione: async () => false,
+        suSessioneAssente: () => { ripuliture += 1; },
+      });
+      g.chiudi();
+      eq('guardia · una scheda smontata non viene più toccata', await g.controlla(), 'spento');
+      eq('guardia · nessuna ripulitura dopo lo smontaggio', ripuliture, 0);
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* --- 8. GLI EVENTI DEL BROWSER sono agganciati e sganciati -------- */
+  /* ---------------------------------------------------------------- */
+  {
+    const agganciati = { finestra: [], documento: [] };
+    const ambiente = {
+      addEventListener: (t) => agganciati.finestra.push(t),
+      removeEventListener: (t) => {
+        const i = agganciati.finestra.indexOf(t); if (i >= 0) agganciati.finestra.splice(i, 1);
+      },
+    };
+    const documento = {
+      visibilityState: 'visible',
+      ascoltatori: {},
+      addEventListener(t, fn) { this.ascoltatori[t] = fn; agganciati.documento.push(t); },
+      removeEventListener(t) {
+        delete this.ascoltatori[t];
+        const i = agganciati.documento.indexOf(t); if (i >= 0) agganciati.documento.splice(i, 1);
+      },
+    };
+
+    let ripuliture = 0;
+    const g = creaGuardiaRisveglio({
+      ambiente,
+      documento,
+      dentro: () => true,
+      haSessione: async () => false,
+      suSessioneAssente: () => { ripuliture += 1; },
+    });
+
+    ok('eventi · pageshow è agganciato (ritorno da bfcache su Safari)',
+      agganciati.finestra.includes('pageshow'));
+    ok('eventi · visibilitychange è agganciato',
+      agganciati.documento.includes('visibilitychange'));
+
+    /* la scheda passa in sfondo: non deve succedere niente */
+    documento.visibilityState = 'hidden';
+    documento.ascoltatori.visibilitychange();
+    await respira();
+    eq('eventi · andare in sfondo non ripulisce niente', ripuliture, 0);
+
+    /* e torna in primo piano: qui sì */
+    documento.visibilityState = 'visible';
+    documento.ascoltatori.visibilitychange();
+    await respira();
+    eq('eventi · tornare in primo piano fa scattare il controllo', ripuliture, 1);
+
+    g.chiudi();
+    eq('eventi · dopo chiudi() la finestra è pulita', agganciati.finestra.length, 0);
+    eq('eventi · e anche il documento', agganciati.documento.length, 0);
+  }
+}
+
+/* ================================================================== */
+/* 11. LO SCOPE DEL LOGOUT                                             */
+/*                                                                     */
+/* Il rapporto diceva «l'altro telefono resta dentro» e il codice       */
+/* faceva il contrario: il pulsante «Esci» chiamava                     */
+/* `supabase.auth.signOut()` senza argomenti, e senza argomenti vale    */
+/* `{ scope: 'global' }` — revoca i refresh token dell'utente OVUNQUE.  */
+/* Solo la scheda che RICEVEVA l'annuncio usava `local`. Risultato:     */
+/* uscire da Safari sull'iPhone buttava fuori anche il computer, al     */
+/* primo rinnovo del token.                                             */
+/*                                                                     */
+/* Qui non si controlla il sorgente con un'espressione regolare: si     */
+/* guarda la RICHIESTA che parte, e si guarda un secondo dispositivo    */
+/* che prova a rinnovare il token dopo il logout del primo.             */
+/* ================================================================== */
+{
+  const ORA = () => Math.floor(Date.now() / 1000);
+  const utente = {
+    id: 'utente-1', aud: 'authenticated', app_metadata: {}, user_metadata: {},
+    created_at: '2026-01-01T00:00:00Z',
+  };
+  const sessione = (n) => ({
+    access_token: `access-${n}`,
+    refresh_token: `refresh-${n}`,
+    token_type: 'bearer',
+    expires_in: 3600,
+    expires_at: ORA() + 3600,
+    user: utente,
+  });
+
+  /* Un Supabase finto quel tanto che basta: tiene i refresh token vivi
+     dell'utente e sa cosa vuol dire `scope`. È la parte che decide se
+     l'altro dispositivo resta dentro, quindi va rappresentata. */
+  const creaServer = () => {
+    const vivi = new Map();          // refresh_token → access_token
+    let seq = 0;
+    const richieste = [];
+
+    const risposta = (corpo, stato = 200) => new Response(JSON.stringify(corpo), {
+      status: stato, headers: { 'content-type': 'application/json' },
+    });
+
+    return {
+      richieste,
+      vivi,
+      registra(sess) { vivi.set(sess.refresh_token, sess.access_token); },
+      fetch: async (url, opzioni = {}) => {
+        const u = new URL(String(url));
+        const scope = u.searchParams.get('scope');
+        const autorizzazione = (opzioni.headers?.Authorization
+          || opzioni.headers?.authorization || '').replace('Bearer ', '');
+        richieste.push({ percorso: u.pathname, scope, jwt: autorizzazione });
+
+        if (u.pathname.endsWith('/logout')) {
+          if (scope === 'global') {
+            vivi.clear();                                   // via tutti, ovunque
+          } else if (scope === 'local') {
+            for (const [rt, at] of vivi) if (at === autorizzazione) vivi.delete(rt);
+          }
+          return new Response(null, { status: 204 });
+        }
+
+        if (u.pathname.endsWith('/token')) {
+          const corpo = JSON.parse(opzioni.body || '{}');
+          if (!vivi.has(corpo.refresh_token)) {
+            return risposta({ error: 'invalid_grant', error_description: 'refresh token revocato' }, 400);
+          }
+          vivi.delete(corpo.refresh_token);
+          seq += 1;
+          const nuova = sessione(`rinnovo-${seq}`);
+          vivi.set(nuova.refresh_token, nuova.access_token);
+          return risposta(nuova);
+        }
+
+        return risposta({});
+      },
+    };
+  };
+
+  /* Un dispositivo = un localStorage tutto suo. Le SCHEDE dello stesso
+     browser invece condividono lo stesso, ed è tutta la differenza. */
+  const creaDispositivo = (server, nome, n) => {
+    const memoria = new Map();
+    const sess = sessione(n);
+    server.registra(sess);
+    memoria.set(`sb-${nome}-auth-token`, JSON.stringify(sess));
+    const adattatore = {
+      getItem: (k) => (memoria.has(k) ? memoria.get(k) : null),
+      setItem: (k, v) => { memoria.set(k, v); },
+      removeItem: (k) => { memoria.delete(k); },
+    };
+    return {
+      memoria,
+      sess,
+      apriScheda() {
+        return new GoTrueClient({
+          url: 'http://localhost/auth/v1',
+          storageKey: `sb-${nome}-auth-token`,
+          storage: adattatore,
+          persistSession: true,
+          autoRefreshToken: false,
+          detectSessionInUrl: false,
+          fetch: server.fetch,
+        });
+      },
+    };
+  };
+
+  /* --- 1. IL DIFETTO: senza scope la richiesta parte globale --- */
+  {
+    const server = creaServer();
+    const telefono = creaDispositivo(server, 'difetto', 1);
+    const client = telefono.apriScheda();
+    await client.initialize();
+    await client.signOut();                     // com'era: nessun argomento
+    const logout = server.richieste.find((r) => r.percorso.endsWith('/logout'));
+    eq('scope · CAUSA · signOut() senza argomenti parte con scope=global',
+      logout?.scope, 'global');
+  }
+
+  /* --- 2. LA CORREZIONE: il pulsante «Esci» parte con scope=local --- */
+  {
+    const server = creaServer();
+    const telefono = creaDispositivo(server, 'corretto', 2);
+    const client = telefono.apriScheda();
+    await client.initialize();
+    await client.signOut({ scope: 'local' });
+    const logout = server.richieste.find((r) => r.percorso.endsWith('/logout'));
+    eq('scope · il logout iniziale parte con scope=local', logout?.scope, 'local');
+    ok('scope · e nessuna richiesta di questo flusso è globale',
+      server.richieste.every((r) => r.scope !== 'global'));
+    eq('scope · la sessione di questo dispositivo è cancellata',
+      telefono.memoria.get('sb-corretto-auth-token') ?? null, null);
+  }
+
+  /* --- 3. IL SECONDO DISPOSITIVO RESTA DENTRO ---
+     Non basta guardarlo subito dopo: il momento in cui prima veniva
+     buttato fuori era il RINNOVO del token, che arriva più tardi. */
+  {
+    const server = creaServer();
+    const iphone = creaDispositivo(server, 'iphone', 10);
+    const computer = creaDispositivo(server, 'computer', 20);
+    const suIphone = iphone.apriScheda();
+    const suComputer = computer.apriScheda();
+    await suIphone.initialize();
+    await suComputer.initialize();
+
+    await suIphone.signOut({ scope: 'local' });
+
+    eq('due dispositivi · l\'iPhone è uscito',
+      iphone.memoria.get('sb-iphone-auth-token') ?? null, null);
+    ok('due dispositivi · il computer ha ancora la sua sessione scritta',
+      Boolean(computer.memoria.get('sb-computer-auth-token')));
+
+    const { data, error } = await suComputer.refreshSession();
+    ok('due dispositivi · e il RINNOVO del token gli riesce', !error, String(error?.message));
+    ok('due dispositivi · quindi resta autenticato', Boolean(data?.session?.user));
+
+    /* il refresh token dell'iPhone invece è stato revocato davvero: uscire
+       non deve lasciarsi dietro una credenziale ancora buona */
+    ok('due dispositivi · il refresh token dell\'iPhone non vale più',
+      !server.vivi.has(iphone.sess.refresh_token));
+  }
+
+  /* --- 4. E CON `global` il computer sarebbe caduto ---
+     È la prova che il test sopra non passerebbe comunque: se lo scope
+     tornasse globale, questo controllo se ne accorgerebbe. */
+  {
+    const server = creaServer();
+    const iphone = creaDispositivo(server, 'iphone2', 30);
+    const computer = creaDispositivo(server, 'computer2', 40);
+    const suIphone = iphone.apriScheda();
+    const suComputer = computer.apriScheda();
+    await suIphone.initialize();
+    await suComputer.initialize();
+
+    await suIphone.signOut();                   // globale, come prima
+    const { error } = await suComputer.refreshSession();
+    ok('due dispositivi · CAUSA · con scope globale il computer viene buttato fuori al rinnovo',
+      Boolean(error));
+  }
+
+  /* --- 5. ANCHE LA SCHEDA CHE RICEVE esce solo da qui --- */
+  {
+    const server = creaServer();
+    /* due schede dello stesso browser: UN localStorage per tutte e due */
+    const browser = creaDispositivo(server, 'safari', 50);
+    const schedaA = browser.apriScheda();
+    const schedaB = browser.apriScheda();
+    await schedaA.initialize();
+    await schedaB.initialize();
+
+    await schedaA.signOut({ scope: 'local' });          // il pulsante
+    await schedaB.signOut({ scope: 'local' });          // l'annuncio ricevuto
+
+    const scopi = server.richieste.filter((r) => r.percorso.endsWith('/logout')).map((r) => r.scope);
+    ok('scope · nessuno dei due logout è globale', scopi.every((s) => s === 'local'));
+    eq('scope · la sessione condivisa non c\'è più',
+      browser.memoria.get('sb-safari-auth-token') ?? null, null);
+  }
+
+  /* --- 6. NEL SORGENTE non deve restare nessun signOut senza scope ---
+     È l'eccezione dimenticata in un angolo che rimette in piedi il
+     comportamento globale senza che nessuno la colleghi al logout. */
+  {
+    const sa = readFileSync(resolve(process.cwd(), 'src/auth/supabaseAuth.js'), 'utf8');
+    const senzaCommenti = sa
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+    const chiamate = [...senzaCommenti.matchAll(/supabase\.auth\.signOut\(([^)]*)\)/g)]
+      .map((m) => m[1].trim());
+    eq('sorgente · una sola chiamata a supabase.auth.signOut in tutto il file',
+      chiamate.length, 1);
+    eq('sorgente · e ha lo scope scritto esplicitamente',
+      chiamate[0], "{ scope: 'local' }");
+    ok('sorgente · nessun signOut() senza argomenti',
+      !chiamate.some((c) => c === ''));
+    ok('sorgente · e nessuno scope globale da nessuna parte',
+      !/scope:\s*'global'/.test(senzaCommenti));
+    ok('sorgente · il pulsante «Esci» passa dalla funzione unica',
+      /async signOut\(\)\s*\{\s*return escoSoloDaQui\(/.test(sa));
+    ok('sorgente · e anche la scheda che riceve l\'annuncio',
+      /async signOutLocale\(\)\s*\{\s*return escoSoloDaQui\(/.test(sa));
   }
 }
 

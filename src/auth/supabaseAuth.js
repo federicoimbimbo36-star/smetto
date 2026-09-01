@@ -49,6 +49,50 @@ async function fetchProfileConAttesa(id, tentativi = 3) {
   return { id };
 }
 
+/* ------------------------------------------------------------------ */
+/* L'UNICO MODO DI USCIRE, in tutto questo file.                       */
+/*                                                                     */
+/* `supabase.auth.signOut()` senza argomenti vale `{ scope: 'global' }`:*/
+/* revoca i refresh token dell'utente OVUNQUE.                          */
+/*                                                                     */
+/*   'global'  chiude tutte le sessioni dell'utente, su ogni browser e  */
+/*             ogni telefono. Chi stava usando l'app dall'altro         */
+/*             dispositivo viene buttato fuori al primo rinnovo del     */
+/*             token, senza aver toccato niente.                        */
+/*   'local'   revoca SOLTANTO questa sessione, e cancella la copia     */
+/*             scritta su questo dispositivo.                           */
+/*                                                                     */
+/* `local` è quello giusto, e la ragione sta in come è fatta una        */
+/* sessione: le schede dello stesso browser ne condividono UNA, perché  */
+/* condividono lo stesso localStorage. Revocare quella basta e avanza   */
+/* per far uscire tutte le schede di questo Safari, e non tocca la      */
+/* sessione — diversa, con un suo refresh token — che l'altro telefono  */
+/* si è aperto con il proprio accesso.                                  */
+/*                                                                     */
+/* Il refresh token DI QUESTO dispositivo viene comunque revocato sul   */
+/* server: `auth-js` chiama `/logout?scope=local`. Non resta una        */
+/* credenziale viva dietro le spalle di chi è uscito.                   */
+/*                                                                     */
+/* Quello che si perde è «esci da tutti i dispositivi»: un refresh      */
+/* token finito nelle mani sbagliate non si annulla più da qui. È una   */
+/* funzione che va offerta a parte, se serve, non l'effetto involontario*/
+/* di un pulsante «Esci».                                               */
+/*                                                                     */
+/* Una funzione sola perché il rischio vero è la deriva: due copie      */
+/* della stessa chiamata, e fra sei mesi una delle due torna globale    */
+/* senza che nessuno se ne accorga. Qui lo scope si scrive in un posto. */
+/*                                                                     */
+/* L'ESITO SI RESTITUISCE, non si butta via: `signOut` ha un percorso   */
+/* in cui esce con un errore e LASCIA LA SESSIONE SUL DISPOSITIVO —     */
+/* quando la lettura della sessione fallisce perché il token è scaduto  */
+/* e il rinnovo non passa senza rete. Ignorandolo, l'app diceva «Hai    */
+/* effettuato il logout» con la sessione ancora scritta.                */
+/* ------------------------------------------------------------------ */
+async function escoSoloDaQui(seNonRiesce) {
+  const { error } = await supabase.auth.signOut({ scope: 'local' });
+  return error ? { error: error.message || seNonRiesce } : {};
+}
+
 const supabaseAuth = {
   mode: 'supabase',
 
@@ -118,17 +162,41 @@ const supabaseAuth = {
     return { user: { ...profile, id: data.user.id, phone: profile.phone || phone } };
   },
 
-  /* L'ESITO SI RESTITUISCE, non si butta via.
+  /* IL PULSANTE «ESCI»: la scheda che l'utente ha davanti.
 
-     `supabase.auth.signOut()` ha un percorso in cui esce con un errore e
-     LASCIA LA SESSIONE SUL DISPOSITIVO: quando la lettura della sessione
-     fallisce — token scaduto e rinnovo non riuscito perché la rete non
-     c'è — torna subito con l'errore senza cancellare niente. Ignorandolo,
-     l'app diceva «Hai effettuato il logout» con la sessione ancora
-     scritta, e bastava ricaricare per ritrovarsi dentro. */
+     Esce di qui, poi App.jsx annuncia alle altre schede di questo Safari.
+     Lo scope è quello di `escoSoloDaQui` — mai globale — per la ragione
+     spiegata sopra: l'altro telefono della stessa persona non ha premuto
+     niente e non deve accorgersi di questo logout. */
   async signOut() {
-    const { error } = await supabase.auth.signOut();
-    return error ? { error: error.message || 'logout non riuscito' } : {};
+    return escoSoloDaQui('logout non riuscito');
+  },
+
+  /* La scheda che RICEVE l'annuncio, non quella che preme il pulsante.
+
+     Stesso scope, per due motivi diversi. Là si esce; qui si finisce di
+     uscire: la sessione condivisa l'ha già revocata la scheda A, quindi
+     di solito qui non resta nemmeno un access token da mandare al server
+     e la chiamata non parte proprio. Serve comunque, perché è l'unico
+     modo di far emettere a QUESTO client un `SIGNED_OUT` vero invece di
+     lasciarlo convinto di essere dentro — e perché la copia locale può
+     davvero sopravvivere (storage partizionato, navigazione privata, un
+     logout che ha pulito solo l'altra scheda).
+
+     Quello che NON deve fare è revocare a raggio più largo di A: se qui
+     ci scappasse un `global`, il logout su una scheda porterebbe giù
+     l'altro telefono passando dalla porta di servizio. */
+  async signOutLocale() {
+    return escoSoloDaQui('sessione locale non cancellata');
+  },
+
+  /* Solo «c'è o non c'è», senza leggere il profilo: la usa il controllo
+     al risveglio della scheda, che deve essere immediato e non deve
+     dipendere dalla rete. `getSession()` di `auth-js` legge da
+     localStorage, quindi risponde anche a telefono staccato. */
+  async haSessione() {
+    const { data } = await supabase.auth.getSession();
+    return Boolean(data?.session?.user);
   },
 
   async updateProfile(id, patch) {
@@ -210,7 +278,13 @@ const supabaseAuth = {
     // vanno in cascata.
     const { error } = await supabase.rpc('delete_me');
     if (error) return { error: error.message };
-    await supabase.auth.signOut();
+    /* Anche qui `local`, e non per simmetria: l'account non esiste più,
+       quindi non c'è nessuna sessione altrove da revocare e la chiamata
+       globale sarebbe solo una richiesta che il server rifiuta. La regola
+       in questo file è una sola — nessun `signOut()` senza scope — perché
+       è l'eccezione dimenticata in un angolo che poi rimette in piedi il
+       comportamento globale senza che nessuno la colleghi al logout. */
+    await escoSoloDaQui('sessione non cancellata');
     return {};
   },
 };

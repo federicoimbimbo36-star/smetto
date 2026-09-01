@@ -94,3 +94,95 @@ export function creaCanaleAuth({ onLogout, ambiente = globalThis } = {}) {
     },
   };
 }
+
+/* ------------------------------------------------------------------ */
+/* LA SCHEDA CHE DORMIVA                                               */
+/*                                                                     */
+/* Il canale qui sopra copre il caso normale: due schede sveglie, il    */
+/* messaggio arriva, la seconda si pulisce. Su iPhone non basta, ed è   */
+/* questo il motivo per cui la scheda B continuava a funzionare.        */
+/*                                                                     */
+/* Safari su iOS sospende le schede di sfondo. Una pagina congelata non */
+/* riceve né i messaggi di `BroadcastChannel` né gli eventi `storage`,  */
+/* e nessuno dei due viene riconsegnato al risveglio: sono avvisi in    */
+/* tempo reale, e per una scheda ferma quel tempo non passa. L'annuncio */
+/* del logout, semplicemente, non arriva mai.                           */
+/*                                                                     */
+/* E `auth-js` non tappa il buco, anche se sembrerebbe di sì. Al        */
+/* ritorno in primo piano chiama `_recoverAndRefresh()`, che rilegge la */
+/* sessione da localStorage; ma quando non la trova più (l'ha tolta     */
+/* l'altra scheda) fa così:                                             */
+/*                                                                     */
+/*   if (!this._isValidSession(currentSession)) {                       */
+/*     if (currentSession !== null) { await this._removeSession(); }    */
+/*     return;                                                          */
+/*   }                                                                  */
+/*                                                                      */
+/* `currentSession` È null, quindi salta `_removeSession()` — che è     */
+/* l'unico posto da cui esce `SIGNED_OUT` — e torna in silenzio.        */
+/* Nessun evento, `onAuthChange` muto, e la scheda resta a schermo con  */
+/* i dati di un account da cui si è già usciti.                         */
+/*                                                                     */
+/* Da qui questa guardia: al risveglio la scheda non aspetta che        */
+/* qualcuno le dica com'è andata, va a guardare da sé. `haSessione()`   */
+/* legge da localStorage e risponde anche senza rete, quindi il         */
+/* controllo non introduce nessuna dipendenza dal collegamento.         */
+/*                                                                     */
+/* `pageshow` oltre a `visibilitychange` perché su Safari il ritorno da */
+/* bfcache può ripristinare la pagina senza passare da un cambio di     */
+/* visibilità. Se scattano tutti e due, `suSessioneAssente` è la stessa */
+/* sequenza protetta dalla guardia `inCorso`: un reset solo.            */
+/* ------------------------------------------------------------------ */
+
+export function creaGuardiaRisveglio({
+  ambiente = globalThis,
+  documento = ambiente?.document,
+  dentro,
+  haSessione,
+  suSessioneAssente,
+} = {}) {
+  const chiusure = [];
+  let vivo = true;
+
+  const controlla = async () => {
+    if (!vivo) return 'spento';
+    if (dentro && !dentro()) return 'già fuori';       // non c'è niente da difendere
+    let presente;
+    try {
+      presente = await haSessione();
+    } catch {
+      /* Il controllo non è riuscito: non si butta fuori nessuno per un
+         dubbio. Meglio restare come si è che far ripartire da capo chi
+         è legittimamente dentro. */
+      return 'incerto';
+    }
+    if (!vivo) return 'spento';
+    if (presente) return 'sessione presente';
+    await suSessioneAssente?.();
+    return 'ripulita';
+  };
+
+  if (typeof ambiente.addEventListener === 'function') {
+    const suPageshow = () => { controlla(); };
+    ambiente.addEventListener('pageshow', suPageshow);
+    chiusure.push(() => ambiente.removeEventListener('pageshow', suPageshow));
+  }
+
+  if (documento && typeof documento.addEventListener === 'function') {
+    const suVisibilita = () => {
+      if (documento.visibilityState === 'hidden') return;
+      controlla();
+    };
+    documento.addEventListener('visibilitychange', suVisibilita);
+    chiusure.push(() => documento.removeEventListener('visibilitychange', suVisibilita));
+  }
+
+  return {
+    controlla,
+    chiudi() {
+      vivo = false;
+      chiusure.forEach((f) => { try { f(); } catch { /* già staccato */ } });
+      chiusure.length = 0;
+    },
+  };
+}

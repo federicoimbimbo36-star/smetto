@@ -165,6 +165,16 @@ di prima.
 
 - [ ] Due schede aperte: logout in una, verificare che l'altra torni
       all'accesso senza mostrare i dati di prima
+- [ ] **Safari su iPhone, la scheda che dormiva.** Due schede, logout in A,
+      poi **lasciare B in sfondo per qualche minuto** e tornarci senza
+      ricaricare. È il caso che falliva: iOS congela le schede di sfondo,
+      l'annuncio non arriva e `auth-js` al risveglio non emette
+      `SIGNED_OUT`. Deve intervenire `creaGuardiaRisveglio`. Nessun test
+      automatico congela davvero una scheda: questo si prova solo a mano
+- [ ] Sempre su iPhone: dopo il punto sopra, **ricaricare la scheda B**.
+      Deve restare alla schermata di accesso, non rientrare
+- [ ] Due telefoni, stesso account: logout su uno **non** deve far uscire
+      l'altro (la scheda che riceve esce con `scope: 'local'`)
 - [ ] Due schede, due account diversi: verificare che la seconda carichi i
       dati giusti
 - [ ] Uscita da un gruppo con la rete staccata: il gruppo deve restare e
