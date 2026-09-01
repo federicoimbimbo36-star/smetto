@@ -40,7 +40,41 @@ function stubCapacitor() {
   };
 }
 
+/* ------------------------------------------------------------------ */
+/* QUALE BUILD STO GUARDANDO.                                          */
+/*                                                                     */
+/* Serve a rispondere senza congetture alla domanda «la correzione è    */
+/* davvero online?». Il commit arriva da Vercel al momento della build. */
+/*                                                                     */
+/* DUE NOMI, non uno. `VERCEL_GIT_COMMIT_SHA` è la variabile di         */
+/* sistema, ma Vercel la espone solo se l'opzione «Automatically expose */
+/* System Environment Variables» è attiva: senza, la variabile non      */
+/* c'è e la build non è affatto sbagliata. Chi la aggiunge a mano       */
+/* invece la chiama quasi sempre `VITE_VERCEL_GIT_COMMIT_SHA`, perché   */
+/* è il prefisso che Vite riconosce. Si guardano tutte e due.           */
+/*                                                                     */
+/* E il ripiego è `non disponibile`, non `locale`: dire «locale»        */
+/* significherebbe affermare che la build non è passata da Vercel, e    */
+/* non è una cosa che da qui si può sapere. L'unica cosa vera è che     */
+/* l'identificativo non è stato esposto.                                */
+/*                                                                     */
+/* Solo il commit: niente chiavi, niente token, niente dati di nessuno. */
+/* Un hash di commit è pubblico quanto il repository.                   */
+/* ------------------------------------------------------------------ */
+const RIPIEGO_VERSIONE = 'non disponibile';
+
+const commit = process.env.VITE_VERCEL_GIT_COMMIT_SHA
+  || process.env.VERCEL_GIT_COMMIT_SHA
+  || '';
+
+/* Sempre e solo i primi 7 caratteri: l'hash intero non aggiunge niente
+   a chi deve confrontarlo a occhio con quello che mostra Vercel. */
+const VERSIONE = commit.slice(0, 7) || RIPIEGO_VERSIONE;
+
 export default defineConfig({
+  define: {
+    __VERSIONE__: JSON.stringify(VERSIONE),
+  },
   plugins: [stubCapacitor(), react()],
   server: {
     port: 5173,

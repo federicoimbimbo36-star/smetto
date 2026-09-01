@@ -18,8 +18,8 @@ quello lo puoi aprire dal telefono, se è sulla stessa rete di casa.
 npm run build             # produce dist/
 npm run preview           # serve dist/ come in produzione
 npm run lint              # 0 errori, 0 avvisi
-npm run verifica          # calcoli + persistenza + interfaccia: 1501 controlli
-npm run verifica:completa # tutto quanto: 1985 controlli + le schermate
+npm run verifica          # calcoli + persistenza + interfaccia: 1505 controlli
+npm run verifica:completa # tutto quanto: 2006 controlli + le schermate
 ```
 
 ### `npm run verifica:completa`
@@ -32,14 +32,14 @@ prima che fallisce:
 |---|---|---|
 | `controlli.mjs` | i calcoli | 311 |
 | `persistenza.mjs` | che i dati non spariscano | 133 |
-| `redesign.mjs` | markup, CSS, accessibilità | 1057 |
+| `redesign.mjs` | markup, CSS, accessibilità | 1061 |
 | `gruppi.mjs` | rete incerta e classifica | 25 |
 | `coda-utente.mjs` | code attribuite all'utente, scritture offline | 49 |
 | `annulla-lotto.mjs` | annullamento delle registrazioni arretrate | 41 |
 | `account.mjs` | eliminazione dell'account | 22 |
-| `affidabilita.mjs` | gare di sessione, uscita e rientro nei gruppi, gare fra programmazione e annullamento notifiche, letture altrui, pareggi, gruppi sciolti, gare della sincronizzazione, logout fra schede dello stesso browser, risveglio delle schede sospese, scope del logout, marcatore di logout persistente | 347 |
+| `affidabilita.mjs` | gare di sessione, uscita e rientro nei gruppi, gare fra programmazione e annullamento notifiche, letture altrui, pareggi, gruppi sciolti, gare della sincronizzazione, logout fra schede dello stesso browser, risveglio delle schede sospese, scope del logout, marcatore di logout persistente, identificativo della build | 364 |
 | `schermate.jsx` | ogni schermata renderizzata davvero | 42–44 stati * |
-| | **totale** | **1985** + le schermate |
+| | **totale** | **2006** + le schermate |
 
 \* `schermate.jsx` parte da `Date.now()` e gira senza `TZ` fissa, quindi alcuni
 controlli scattano o no a seconda dell'ora: il numero oscilla fra 42 e 44 nella
@@ -93,7 +93,7 @@ revisione partiva, `cancella` no, quindi una cancellazione con una revisione
 vecchia poteva portarsi via il lavoro di un altro dispositivo. Con il DELETE
 secco di prima ne fallivano **7**. Vedi `PERSISTENZA.md`.
 
-`verifica/redesign.mjs` (1057) controlla l'**interfaccia**: tag JSX e parentesi
+`verifica/redesign.mjs` (1061) controlla l'**interfaccia**: tag JSX e parentesi
 bilanciate, componenti importati davvero, import mai usati, costanti usate prima
 di essere dichiarate, ogni classe scritta nel markup esistente in `styles.css`
 (e viceversa), contrasto WCAG AA di ogni coppia testo/fondo, bersagli tattili da

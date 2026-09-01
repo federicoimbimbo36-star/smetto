@@ -986,3 +986,14 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 @media (min-width: 431px) {
   .screen { padding-left: var(--s6); padding-right: var(--s6); }
 }
+
+/* ---- identificativo della build, in fondo al Profilo ---- */
+/* Deve essere leggibile a chi lo cerca e invisibile a chi non lo cerca:
+   nessuno apre il Profilo per sapere quale commit sta girando. */
+.versione-build {
+  margin-top: var(--s6);
+  text-align: center;
+  color: var(--t2);
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+}

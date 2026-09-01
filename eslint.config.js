@@ -52,7 +52,9 @@ export default [
      modo in cui i controlli riportano l'esito, quindi la regola che lo
      vieta non si applica. */
   {
-    files: ['verifica/**/*.mjs', 'verifica/**/*.js', 'verifica/**/*.jsx'],
+    /* `vite.config.js` gira in Node, non nel browser: legge
+       `process.env.VERCEL_GIT_COMMIT_SHA` al momento della build. */
+    files: ['verifica/**/*.mjs', 'verifica/**/*.js', 'verifica/**/*.jsx', 'vite.config.js'],
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'module',

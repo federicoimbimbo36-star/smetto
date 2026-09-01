@@ -2679,6 +2679,153 @@ const T = 1_700_000_000_000;
   }
 }
 
+/* ================================================================== */
+/* 13. QUALE BUILD STA GIRANDO                                         */
+/*                                                                     */
+/* Il collaudo del logout è fallito due volte, e in nessuna delle due  */
+/* si poteva escludere che il telefono stesse guardando una build      */
+/* vecchia. Finché quella domanda non ha una risposta certa, un        */
+/* collaudo che fallisce non dice se il codice è sbagliato o se non è  */
+/* mai arrivato — e si finisce a correggere cose che erano già giuste. */
+/*                                                                     */
+/* Questi controlli non leggono il sorgente con un'espressione         */
+/* regolare: ESEGUONO `vite.config.js` con le variabili d'ambiente vere */
+/* e guardano cosa ne esce, poi impacchettano `src/versione.js` con lo  */
+/* stesso `define` per vedere il valore sostituito davvero.             */
+/* ================================================================== */
+{
+  const { build: impacchetta } = await import('esbuild');
+
+  /* Rileggere `vite.config.js` con un ambiente diverso: il modulo si
+     valuta una volta sola, quindi la query serve a farlo rileggere. */
+  let giro = 0;
+  const configConAmbiente = async (variabili) => {
+    const prima = {
+      VITE_VERCEL_GIT_COMMIT_SHA: process.env.VITE_VERCEL_GIT_COMMIT_SHA,
+      VERCEL_GIT_COMMIT_SHA: process.env.VERCEL_GIT_COMMIT_SHA,
+    };
+    for (const chiave of Object.keys(prima)) delete process.env[chiave];
+    Object.assign(process.env, variabili);
+    giro += 1;
+    try {
+      const mod = await import(`../vite.config.js?giro=${giro}`);
+      const conf = typeof mod.default === 'function' ? mod.default({ mode: 'production' }) : mod.default;
+      return JSON.parse(conf.define.__VERSIONE__);
+    } finally {
+      for (const chiave of Object.keys(prima)) {
+        delete process.env[chiave];
+        if (prima[chiave] !== undefined) process.env[chiave] = prima[chiave];
+      }
+    }
+  };
+
+  const SETTE = 'abc1234';
+  const LUNGO = `${SETTE}def567890abcdef1234567890abcdef12345678`;
+
+  /* --- 1. la variabile con il prefisso di Vite --- */
+  {
+    const v = await configConAmbiente({ VITE_VERCEL_GIT_COMMIT_SHA: LUNGO });
+    eq('rilascio · VITE_VERCEL_GIT_COMMIT_SHA viene letta', v, SETTE);
+  }
+
+  /* --- 2. la variabile di sistema di Vercel --- */
+  {
+    const v = await configConAmbiente({ VERCEL_GIT_COMMIT_SHA: LUNGO });
+    eq('rilascio · VERCEL_GIT_COMMIT_SHA viene letta', v, SETTE);
+  }
+
+  /* --- 3. l'ordine: quella con il prefisso vince --- */
+  {
+    const v = await configConAmbiente({
+      VITE_VERCEL_GIT_COMMIT_SHA: 'aaaaaaa1111',
+      VERCEL_GIT_COMMIT_SHA: 'bbbbbbb2222',
+    });
+    eq('rilascio · con tutte e due vince quella con il prefisso VITE_', v, 'aaaaaaa');
+  }
+
+  /* --- 4. nessuna variabile: «non disponibile», non «locale» ---
+     La differenza non è di stile. «locale» afferma che la build non è
+     passata da Vercel, e da qui non si può sapere: Vercel espone la
+     variabile di sistema solo se glielo si chiede. L'unica cosa vera è
+     che l'identificativo non è stato esposto. */
+  {
+    const v = await configConAmbiente({});
+    eq('rilascio · senza variabili si dice «non disponibile»', v, 'non disponibile');
+    ok('rilascio · e non si afferma che la build è locale', v !== 'locale');
+  }
+
+  /* --- 5. una variabile vuota vale come assente --- */
+  {
+    const v = await configConAmbiente({ VERCEL_GIT_COMMIT_SHA: '' });
+    eq('rilascio · una variabile vuota non produce una versione vuota', v, 'non disponibile');
+  }
+
+  /* --- 6. sempre e solo sette caratteri --- */
+  {
+    const corto = await configConAmbiente({ VERCEL_GIT_COMMIT_SHA: 'abc' });
+    eq('rilascio · un hash più corto di 7 si mostra com\'è', corto, 'abc');
+    const lungo = await configConAmbiente({ VERCEL_GIT_COMMIT_SHA: LUNGO });
+    eq('rilascio · e uno lungo si taglia a 7', lungo.length, 7);
+  }
+
+  /* --- 7. IL BUNDLE: il segnaposto deve sparire davvero ---
+     Che `define` contenga il valore giusto non basta: se `versione.js`
+     smettesse di leggere `__VERSIONE__`, o se il segnaposto restasse non
+     sostituito, il Profilo mostrerebbe una versione sbagliata senza che
+     nessun controllo sul sorgente se ne accorga. */
+  {
+    const versioneCon = async (definito) => {
+      const esito = await impacchetta({
+        entryPoints: [resolve(process.cwd(), 'src/versione.js')],
+        bundle: true, write: false, format: 'esm', platform: 'browser',
+        define: definito ? { __VERSIONE__: JSON.stringify(definito) } : {},
+      });
+      return esito.outputFiles[0].text;
+    };
+
+    const conCommit = await versioneCon(SETTE);
+    ok('rilascio · nel bundle il commit c\'è davvero', conCommit.includes(SETTE));
+    ok('rilascio · e non resta nessun segnaposto __VERSIONE__ da risolvere',
+      !conCommit.includes('__VERSIONE__'), conCommit.slice(0, 300));
+
+    /* fuori da Vite (banco delle schermate) la costante non esiste: il
+       bundle non deve esplodere, deve ripiegare */
+    const senzaDefine = await versioneCon(null);
+    ok('rilascio · senza define il ripiego resta nel bundle',
+      senzaDefine.includes('non disponibile'));
+    ok('rilascio · e non dice «locale»', !senzaDefine.includes("'locale'"));
+  }
+
+  /* --- 8. il Profilo la mostra, in fondo --- */
+  {
+    const profilo = readFileSync(resolve(process.cwd(), 'src/screens/ProfiloScreen.jsx'), 'utf8');
+    ok('rilascio · il Profilo mostra «Versione: …»', /Versione: \{VERSIONE\}/.test(profilo));
+    ok('rilascio · in fondo alla schermata',
+      profilo.indexOf('Versione: {VERSIONE}') > profilo.indexOf('onClick={onDelete}'));
+  }
+
+  /* --- 9. NIENTE ALTRO deve uscire da lì ---
+     Il blocco `define` è il posto in cui, per comodità, finiscono le
+     variabili d'ambiente sbagliate. */
+  {
+    const vite = readFileSync(resolve(process.cwd(), 'vite.config.js'), 'utf8');
+    const versione = readFileSync(resolve(process.cwd(), 'src/versione.js'), 'utf8');
+    const definiti = (vite.match(/define:\s*\{([\s\S]*?)\n {2}\}/) || [])[1] || '';
+    const proibite = /KEY|TOKEN|SECRET|PASSWORD|EMAIL|PHONE|SUPABASE|ANON/i;
+
+    ok('rilascio · il define contiene solo la versione',
+      /__VERSIONE__/.test(definiti) && !proibite.test(definiti), definiti);
+    ok('rilascio · e la versione non contiene dati della persona',
+      !proibite.test(versione));
+
+    /* le variabili lette sono solo quelle due, e sono entrambe un commit */
+    const lette = [...vite.matchAll(/process\.env\.([A-Z0-9_]+)/g)].map((m) => m[1]);
+    eq('rilascio · si leggono solo le due variabili del commit',
+      [...new Set(lette)].sort().join(','),
+      'VERCEL_GIT_COMMIT_SHA,VITE_VERCEL_GIT_COMMIT_SHA');
+  }
+}
+
 console.log('');
 if (falliti.length) {
   falliti.forEach((f) => console.log(`  ✗ ${f}`));

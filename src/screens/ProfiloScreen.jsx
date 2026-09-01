@@ -3,6 +3,7 @@ import { Mail, Phone, Download, LogOut, Trash2, ChevronRight } from 'lucide-reac
 import { PALETTE } from '../constants';
 import { AvatarCircle, Chip, Pianta } from '../components';
 import { eur, dec } from '../utils/format';
+import { VERSIONE } from '../versione';
 
 /* ------------------------------------------------------------------ */
 /*  PROFILO                                                            */
@@ -421,6 +422,12 @@ export default function ProfiloScreen({
           <Trash2 size={15} /> Elimina l'account
         </button>
       </div>
+
+      {/* Quale build sto guardando. In fondo e in punta di piedi: non
+          serve a chi smette di fumare, serve quando qualcosa non torna e
+          bisogna sapere se il telefono ha davvero la versione nuova.
+          Solo l'hash del commit, che è pubblico quanto il repository. */}
+      <p className="nota versione-build">Versione: {VERSIONE}</p>
     </div>
   );
 }
