@@ -124,22 +124,30 @@ export function creaCanaleAuth({ onLogout, ambiente = globalThis } = {}) {
 /* i dati di un account da cui si è già usciti.                         */
 /*                                                                     */
 /* Da qui questa guardia: al risveglio la scheda non aspetta che        */
-/* qualcuno le dica com'è andata, va a guardare da sé. `haSessione()`   */
-/* legge da localStorage e risponde anche senza rete, quindi il         */
-/* controllo non introduce nessuna dipendenza dal collegamento.         */
+/* qualcuno le dica com'è andata, va a guardare da sé. Il controllo     */
+/* legge da localStorage e risponde anche senza rete, quindi non        */
+/* introduce nessuna dipendenza dal collegamento.                       */
+/*                                                                     */
+/* `sessioneValida` e non «c'è una sessione»: era proprio quello        */
+/* l'errore che restava. Chiedere «c'è?» dà per scontato che dopo il    */
+/* logout della scheda A la scheda B non trovi più niente, e su Safari  */
+/* iOS non è vero — una scheda ripristinata dal congelamento riparte    */
+/* con la sessione che il suo client teneva in memoria. Adesso la       */
+/* domanda è «vale ancora?», e la risposta guarda anche il marcatore di */
+/* logout (`marcatoreLogout.js`), che è scritto e non dedotto.          */
 /*                                                                     */
 /* `pageshow` oltre a `visibilitychange` perché su Safari il ritorno da */
 /* bfcache può ripristinare la pagina senza passare da un cambio di     */
-/* visibilità. Se scattano tutti e due, `suSessioneAssente` è la stessa */
-/* sequenza protetta dalla guardia `inCorso`: un reset solo.            */
+/* visibilità. Se scattano tutti e due, `suSessioneNonValida` è la      */
+/* stessa sequenza protetta dalla guardia `inCorso`: un reset solo.     */
 /* ------------------------------------------------------------------ */
 
 export function creaGuardiaRisveglio({
   ambiente = globalThis,
   documento = ambiente?.document,
   dentro,
-  haSessione,
-  suSessioneAssente,
+  sessioneValida,
+  suSessioneNonValida,
 } = {}) {
   const chiusure = [];
   let vivo = true;
@@ -147,9 +155,9 @@ export function creaGuardiaRisveglio({
   const controlla = async () => {
     if (!vivo) return 'spento';
     if (dentro && !dentro()) return 'già fuori';       // non c'è niente da difendere
-    let presente;
+    let valida;
     try {
-      presente = await haSessione();
+      valida = await sessioneValida();
     } catch {
       /* Il controllo non è riuscito: non si butta fuori nessuno per un
          dubbio. Meglio restare come si è che far ripartire da capo chi
@@ -157,8 +165,8 @@ export function creaGuardiaRisveglio({
       return 'incerto';
     }
     if (!vivo) return 'spento';
-    if (presente) return 'sessione presente';
-    await suSessioneAssente?.();
+    if (valida) return 'sessione presente';
+    await suSessioneNonValida?.();
     return 'ripulita';
   };
 

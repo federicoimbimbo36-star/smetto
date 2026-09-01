@@ -172,7 +172,13 @@ di prima.
       `SIGNED_OUT`. Deve intervenire `creaGuardiaRisveglio`. Nessun test
       automatico congela davvero una scheda: questo si prova solo a mano
 - [ ] Sempre su iPhone: dopo il punto sopra, **ricaricare la scheda B**.
-      Deve restare alla schermata di accesso, non rientrare
+      Deve restare alla schermata di accesso, non rientrare. È il punto che
+      ha fallito due volte: la sessione può essere ancora leggibile, ed è il
+      marcatore in `localStorage` (`smetto:uscito`) a dover decidere
+- [ ] Rientrare con lo **stesso** account: deve funzionare al primo colpo. Se
+      non entra, il marcatore non viene tolto al login
+- [ ] Entrare con un **altro** account nello stesso Safari dopo un logout:
+      non deve essere buttato fuori dal marcatore di chi è uscito prima
 - [ ] Due telefoni, stesso account: logout su uno **non** deve far uscire
       l'altro (la scheda che riceve esce con `scope: 'local'`)
 - [ ] Due schede, due account diversi: verificare che la seconda carichi i

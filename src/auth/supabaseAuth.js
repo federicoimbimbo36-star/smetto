@@ -190,13 +190,21 @@ const supabaseAuth = {
     return escoSoloDaQui('sessione locale non cancellata');
   },
 
-  /* Solo «c'è o non c'è», senza leggere il profilo: la usa il controllo
-     al risveglio della scheda, che deve essere immediato e non deve
-     dipendere dalla rete. `getSession()` di `auth-js` legge da
-     localStorage, quindi risponde anche a telefono staccato. */
-  async haSessione() {
+  /* CHI C'È, senza leggere il profilo.
+
+     La usa il controllo al risveglio della scheda, che deve essere
+     immediato e non deve dipendere dalla rete: `getSession()` di
+     `auth-js` legge da localStorage e risponde anche a telefono
+     staccato, mentre `supabaseAuth.getSession()` va a prendere anche il
+     profilo dal database — un giro in rete a ogni cambio di scheda, per
+     un dato che qui non serve.
+
+     Torna l'identificativo e non un sì/no perché il marcatore di logout
+     va confrontato con QUALE utente è dentro: senza il nome, buttare
+     fuori sarebbe una decisione presa al buio. */
+  async idSessione() {
     const { data } = await supabase.auth.getSession();
-    return Boolean(data?.session?.user);
+    return data?.session?.user?.id || null;
   },
 
   async updateProfile(id, patch) {

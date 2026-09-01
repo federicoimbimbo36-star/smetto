@@ -18,6 +18,10 @@ import {
 } from '../src/utils/gruppiSync.js';
 import { creaCanaleAuth, creaGuardiaRisveglio, CHIAVE_CANALE } from '../src/utils/canaleAuth.js';
 import { eseguiLogout, creaUscitaAnnunciata } from '../src/utils/logout.js';
+import {
+  scriviMarcatore, leggiMarcatore, rimuoviMarcatore, marcatoreRiguarda, sessioneAmmessa,
+  CHIAVE_MARCATORE,
+} from '../src/utils/marcatoreLogout.js';
 import { GoTrueClient } from '@supabase/auth-js';
 
 let passati = 0;
@@ -1580,12 +1584,12 @@ const T = 1_700_000_000_000;
     ok('uscita · supabaseAuth restituisce l\'errore', /return error \?/.test(sa));
     ok('uscita · supabaseAuth sa uscire solo da questo dispositivo',
       /signOut\(\{ scope: 'local' \}\)/.test(sa));
-    ok('uscita · e sa dire se una sessione c\'è, senza leggere il profilo',
-      /async haSessione\(\)/.test(sa));
+    ok('uscita · e sa dire CHI c\'è, senza leggere il profilo',
+      /async idSessione\(\)/.test(sa));
 
     const la = readFileSync(resolve(process.cwd(), 'src/auth/localAuth.js'), 'utf8');
     ok('uscita · anche il backend locale ha la stessa interfaccia',
-      /async signOutLocale\(\)/.test(la) && /async haSessione\(\)/.test(la));
+      /async signOutLocale\(\)/.test(la) && /async idSessione\(\)/.test(la));
   }
 }
 
@@ -1681,7 +1685,7 @@ const T = 1_700_000_000_000;
       const { error } = await client.signOut({ scope: 'local' });
       return error ? { error: error.message } : {};
     },
-    haSessione: async () => {
+    sessioneValida: async () => {
       const { data } = await client.getSession();
       return Boolean(data?.session?.user);
     },
@@ -1743,8 +1747,8 @@ const T = 1_700_000_000_000;
     const guardia = creaGuardiaRisveglio({
       ambiente: {}, documento: null,
       dentro: () => schermo.dentro,
-      haSessione: authB.haSessione,
-      suSessioneAssente: ricevi,
+      sessioneValida: authB.sessioneValida,
+      suSessioneNonValida: ricevi,
     });
 
     /* finché la sessione c'è, il risveglio non deve buttare fuori nessuno */
@@ -1799,7 +1803,7 @@ const T = 1_700_000_000_000;
 
     eq('annuncio · la scheda B esce', await ricevi(), 'uscito');
     eq('annuncio · prima la sessione, poi l\'interfaccia', ordine.join(' → '), 'sessione → reset');
-    eq('annuncio · e la sessione locale non c\'è più', await authB.haSessione(), false);
+    eq('annuncio · e la sessione locale non c\'è più', await authB.sessioneValida(), false);
 
     const riaperta = apriScheda(adattatore);
     await riaperta.client.initialize();
@@ -2017,8 +2021,8 @@ const T = 1_700_000_000_000;
       const g = creaGuardiaRisveglio({
         ambiente: {}, documento: null,
         dentro: () => true,
-        haSessione: async () => true,
-        suSessioneAssente: () => { ripuliture += 1; },
+        sessioneValida: async () => true,
+        suSessioneNonValida: () => { ripuliture += 1; },
       });
       eq('guardia · con la sessione presente non fa niente', await g.controlla(), 'sessione presente');
       eq('guardia · e nessuna ripulitura', ripuliture, 0);
@@ -2031,8 +2035,8 @@ const T = 1_700_000_000_000;
       const g = creaGuardiaRisveglio({
         ambiente: {}, documento: null,
         dentro: () => true,
-        haSessione: async () => { throw new Error('storage negato'); },
-        suSessioneAssente: () => { ripuliture += 1; },
+        sessioneValida: async () => { throw new Error('storage negato'); },
+        suSessioneNonValida: () => { ripuliture += 1; },
       });
       eq('guardia · se il controllo fallisce non butta fuori nessuno',
         await g.controlla(), 'incerto');
@@ -2045,8 +2049,8 @@ const T = 1_700_000_000_000;
       const g = creaGuardiaRisveglio({
         ambiente: {}, documento: null,
         dentro: () => false,
-        haSessione: async () => { letture += 1; return false; },
-        suSessioneAssente: () => {},
+        sessioneValida: async () => { letture += 1; return false; },
+        suSessioneNonValida: () => {},
       });
       eq('guardia · a schermata di accesso non controlla nemmeno',
         await g.controlla(), 'già fuori');
@@ -2059,8 +2063,8 @@ const T = 1_700_000_000_000;
       const g = creaGuardiaRisveglio({
         ambiente: {}, documento: null,
         dentro: () => true,
-        haSessione: async () => false,
-        suSessioneAssente: () => { ripuliture += 1; },
+        sessioneValida: async () => false,
+        suSessioneNonValida: () => { ripuliture += 1; },
       });
       g.chiudi();
       eq('guardia · una scheda smontata non viene più toccata', await g.controlla(), 'spento');
@@ -2094,8 +2098,8 @@ const T = 1_700_000_000_000;
       ambiente,
       documento,
       dentro: () => true,
-      haSessione: async () => false,
-      suSessioneAssente: () => { ripuliture += 1; },
+      sessioneValida: async () => false,
+      suSessioneNonValida: () => { ripuliture += 1; },
     });
 
     ok('eventi · pageshow è agganciato (ritorno da bfcache su Safari)',
@@ -2345,6 +2349,333 @@ const T = 1_700_000_000_000;
       /async signOut\(\)\s*\{\s*return escoSoloDaQui\(/.test(sa));
     ok('sorgente · e anche la scheda che riceve l\'annuncio',
       /async signOutLocale\(\)\s*\{\s*return escoSoloDaQui\(/.test(sa));
+  }
+}
+
+/* ================================================================== */
+/* 12. IL MARCATORE DI LOGOUT                                          */
+/*                                                                     */
+/* Provato di nuovo sull'iPhone, e falliva ancora: logout nella scheda  */
+/* A, la scheda B restava dentro, e RICARICANDOLA restava dentro lo     */
+/* stesso.                                                             */
+/*                                                                     */
+/* Tre tentativi non erano bastati, e il terzo è quello che spiega      */
+/* perché. `BroadcastChannel` e l'evento `storage` non arrivano a una   */
+/* scheda che iOS ha congelato: già saputo. Ma il controllo al          */
+/* risveglio, che doveva coprirli, chiedeva «c'è una sessione?» — e     */
+/* dava per scontato che dopo il logout di A la scheda B non ne         */
+/* trovasse più. Sull'iPhone la trova: una scheda ripristinata dal      */
+/* congelamento riparte con la sessione che il suo client teneva in     */
+/* memoria, e può riscriverla nello storage.                            */
+/*                                                                     */
+/* L'errore era dedurre uno stato dall'ASSENZA di qualcosa. Adesso il   */
+/* fatto si scrive: un marcatore in `localStorage`, in una chiave tutta */
+/* sua, che `auth-js` non tocca e che il ricaricamento non porta via.   */
+/*                                                                     */
+/* Le prove qui sotto ricostruiscono lo scenario del telefono passo per */
+/* passo, compreso il pezzo che prima nessun test rappresentava: la     */
+/* sessione di B che, dopo il logout di A, È ANCORA LEGGIBILE.          */
+/* ================================================================== */
+{
+  const CHIAVE_SESSIONE = 'sb-marcatore-auth-token';
+  const utenteA = 'utente-A';
+  const utenteB = 'utente-B';
+
+  /* un browser con un solo localStorage, come Safari con due schede */
+  const creaBrowser = () => {
+    const memoria = new Map();
+    return {
+      memoria,
+      ambiente: {
+        localStorage: {
+          getItem: (k) => (memoria.has(k) ? memoria.get(k) : null),
+          setItem: (k, v) => { memoria.set(k, v); },
+          removeItem: (k) => { memoria.delete(k); },
+        },
+      },
+    };
+  };
+
+  const sessioneDi = (uid) => ({ user: { id: uid } });
+
+  /* --- 1. lo scenario del telefono, per intero --- */
+  {
+    const browser = creaBrowser();
+    const { ambiente, memoria } = browser;
+
+    /* due schede, stesso account, sessione condivisa e leggibile */
+    memoria.set(CHIAVE_SESSIONE, JSON.stringify(sessioneDi(utenteA)));
+
+    /* la scheda A esce. Nessun evento viene consegnato a B: è sospesa. */
+    const marcatore = scriviMarcatore(utenteA, { ambiente });
+    memoria.delete(CHIAVE_SESSIONE);
+
+    ok('marcatore · il logout lascia un fatto scritto', Boolean(marcatore));
+    eq('marcatore · con il tipo', marcatore.tipo, 'logout');
+    eq('marcatore · con l\'utente', marcatore.userId, utenteA);
+    ok('marcatore · con il momento', typeof marcatore.quando === 'number');
+    ok('marcatore · e con un identificativo unico', Boolean(marcatore.id));
+    ok('marcatore · sta in una chiave sua, separata dalla sessione',
+      CHIAVE_MARCATORE !== CHIAVE_SESSIONE && Boolean(memoria.get(CHIAVE_MARCATORE)));
+
+    /* IL PEZZO CHE MANCAVA: Safari ripristina la scheda B, e il suo
+       client riscrive la sessione che aveva in memoria. Da qui in poi
+       `getSession()` di B risponde di sì. */
+    memoria.set(CHIAVE_SESSIONE, JSON.stringify(sessioneDi(utenteA)));
+
+    const letta = JSON.parse(memoria.get(CHIAVE_SESSIONE));
+    ok('marcatore · CASO REALE · dopo il logout la sessione di B è ancora leggibile',
+      Boolean(letta?.user?.id));
+
+    /* B viene RICARICATA: è l'avvio dell'app, non un evento */
+    eq('marcatore · ma all\'avvio la sessione non viene ammessa',
+      sessioneAmmessa(letta, { ambiente }), null);
+
+    /* e al risveglio, stessa risposta: la funzione è la stessa */
+    const id = letta.user.id;
+    ok('marcatore · e al risveglio la sessione non risulta valida',
+      !(Boolean(id) && !marcatoreRiguarda(leggiMarcatore({ ambiente }), id)));
+  }
+
+  /* --- 1-bis. LO STESSO, con un client Supabase VERO ---
+     Non un oggetto finto: un `GoTrueClient` di `@supabase/auth-js` che
+     legge davvero la sessione. È il caso provato sul telefono — la
+     scheda B ricaricata trova una sessione buona — e serve che a
+     rifiutarla sia la logica dell'app, non l'assenza del dato. */
+  {
+    const memoria = new Map();
+    const adattatore = {
+      getItem: (k) => (memoria.has(k) ? memoria.get(k) : null),
+      setItem: (k, v) => { memoria.set(k, v); },
+      removeItem: (k) => { memoria.delete(k); },
+    };
+    const ambiente = {
+      localStorage: {
+        getItem: (k) => (memoria.has(k) ? memoria.get(k) : null),
+        setItem: (k, v) => { memoria.set(k, v); },
+        removeItem: (k) => { memoria.delete(k); },
+      },
+    };
+    const CHIAVE = 'sb-vero-auth-token';
+    const vera = {
+      access_token: 'access-vero',
+      refresh_token: 'refresh-vero',
+      token_type: 'bearer',
+      expires_in: 3600,
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+      user: {
+        id: utenteA, aud: 'authenticated', app_metadata: {}, user_metadata: {},
+        created_at: '2026-01-01T00:00:00Z',
+      },
+    };
+    const senzaRete = async () => new Response('{}', {
+      status: 200, headers: { 'content-type': 'application/json' },
+    });
+    const apri = () => new GoTrueClient({
+      url: 'http://localhost/auth/v1',
+      storageKey: CHIAVE,
+      storage: adattatore,
+      persistSession: true,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+      fetch: senzaRete,
+    });
+
+    memoria.set(CHIAVE, JSON.stringify(vera));
+
+    /* la scheda A esce; nessun evento raggiunge B */
+    const schedaA = apri();
+    await schedaA.initialize();
+    await schedaA.signOut({ scope: 'local' });
+    scriviMarcatore(utenteA, { ambiente });
+
+    /* Safari ripristina B e il suo client riscrive quello che aveva in
+       memoria: da qui in poi la sessione È di nuovo nello storage */
+    memoria.set(CHIAVE, JSON.stringify(vera));
+
+    /* B viene RICARICATA: client nuovo, storage vero */
+    const schedaBRicaricata = apri();
+    await schedaBRicaricata.initialize();
+    const { data } = await schedaBRicaricata.getSession();
+
+    ok('marcatore · CASO REALE · getSession() della scheda B ricaricata risponde ancora',
+      Boolean(data.session?.user?.id));
+    eq('marcatore · ed è proprio l\'utente uscito', data.session?.user?.id, utenteA);
+    eq('marcatore · eppure l\'app NON la ammette',
+      sessioneAmmessa({ user: { id: data.session?.user?.id } }, { ambiente }), null);
+
+    /* e dopo un accesso riuscito la stessa sessione torna buona */
+    rimuoviMarcatore({ ambiente });
+    const dopoAccesso = { user: { id: utenteA } };
+    eq('marcatore · dopo un nuovo accesso la stessa sessione è ammessa',
+      sessioneAmmessa(dopoAccesso, { ambiente }), dopoAccesso);
+  }
+
+  /* --- 2. senza marcatore la sessione passa: non è un blocco a caso --- */
+  {
+    const browser = creaBrowser();
+    const sess = sessioneDi(utenteA);
+    eq('marcatore · senza marcatore si entra normalmente',
+      sessioneAmmessa(sess, { ambiente: browser.ambiente }), sess);
+  }
+
+  /* --- 3. NON deve buttare fuori un ALTRO account ---
+     Esco io dal telefono di casa; chi entra dopo con il suo account non
+     c'entra niente con il mio logout. Un marcatore senza nome sarebbe
+     stato un interruttore generale. */
+  {
+    const browser = creaBrowser();
+    scriviMarcatore(utenteA, { ambiente: browser.ambiente });
+    const suaSessione = sessioneDi(utenteB);
+    eq('marcatore · un altro utente non viene toccato',
+      sessioneAmmessa(suaSessione, { ambiente: browser.ambiente }), suaSessione);
+    eq('marcatore · e il mio resta fuori',
+      sessioneAmmessa(sessioneDi(utenteA), { ambiente: browser.ambiente }), null);
+  }
+
+  /* --- 4. si cancella SOLO con un accesso riuscito --- */
+  {
+    const browser = creaBrowser();
+    const { ambiente } = browser;
+    scriviMarcatore(utenteA, { ambiente });
+
+    /* leggerlo non lo consuma: al secondo risveglio deve valere ancora */
+    sessioneAmmessa(sessioneDi(utenteA), { ambiente });
+    sessioneAmmessa(sessioneDi(utenteA), { ambiente });
+    ok('marcatore · leggerlo non lo consuma', Boolean(leggiMarcatore({ ambiente })));
+    eq('marcatore · e continua a valere al risveglio successivo',
+      sessioneAmmessa(sessioneDi(utenteA), { ambiente }), null);
+
+    /* accesso riuscito: adesso sì */
+    rimuoviMarcatore({ ambiente });
+    eq('marcatore · dopo un accesso riuscito non c\'è più',
+      leggiMarcatore({ ambiente }), null);
+    const rientro = sessioneDi(utenteA);
+    eq('marcatore · e lo stesso utente può rientrare',
+      sessioneAmmessa(rientro, { ambiente }), rientro);
+  }
+
+  /* --- 5. due logout di fila sono due marcatori diversi ---
+     Riscrivere lo STESSO valore in localStorage non fa scattare l'evento
+     `storage` nelle altre schede: senza un identificativo che cambia, il
+     secondo logout sarebbe muto. */
+  {
+    const browser = creaBrowser();
+    const uno = scriviMarcatore(utenteA, { ambiente: browser.ambiente });
+    const due = scriviMarcatore(utenteA, { ambiente: browser.ambiente });
+    ok('marcatore · due logout di fila hanno identificativi diversi', uno.id !== due.id);
+  }
+
+  /* --- 6. roba rotta o mancante non blocca nessuno ---
+     Sbagliare da questa parte vuol dire non far entrare la gente. */
+  {
+    const browser = creaBrowser();
+    const { ambiente, memoria } = browser;
+    const sess = sessioneDi(utenteA);
+
+    memoria.set(CHIAVE_MARCATORE, 'non è json');
+    eq('marcatore · un marcatore illeggibile vale come assente',
+      sessioneAmmessa(sess, { ambiente }), sess);
+
+    memoria.set(CHIAVE_MARCATORE, '{"tipo":"altro","userId":"utente-A"}');
+    eq('marcatore · un marcatore di altro tipo non blocca', sessioneAmmessa(sess, { ambiente }), sess);
+
+    memoria.set(CHIAVE_MARCATORE, '{"tipo":"logout"}');
+    eq('marcatore · un marcatore senza utente non blocca', sessioneAmmessa(sess, { ambiente }), sess);
+
+    eq('marcatore · e senza sessione non c\'è niente da ammettere',
+      sessioneAmmessa(null, { ambiente }), null);
+  }
+
+  /* --- 7. storage negato: non si blocca l'app ---
+     Safari in navigazione privata può rifiutare la scrittura. */
+  {
+    const negato = {
+      localStorage: {
+        getItem() { throw new Error('negato'); },
+        setItem() { throw new Error('negato'); },
+        removeItem() { throw new Error('negato'); },
+      },
+    };
+    eq('marcatore · se non si può scrivere lo dice invece di fingere',
+      scriviMarcatore(utenteA, { ambiente: negato }), null);
+    eq('marcatore · e se non si può leggere non blocca nessuno',
+      leggiMarcatore({ ambiente: negato }), null);
+    const sess = sessioneDi(utenteA);
+    eq('marcatore · la sessione passa lo stesso',
+      sessioneAmmessa(sess, { ambiente: negato }), sess);
+  }
+
+  /* --- 8. LA SEQUENZA DI USCITA scrive il marcatore, e solo se è uscita --- */
+  {
+    const passi = [];
+    await eseguiLogout({
+      signOut: async () => ({}),
+      spegniNotifiche: async () => passi.push('notifiche'),
+      marca: () => passi.push('marcatore'),
+      reset: () => passi.push('reset'),
+      annuncia: () => passi.push('annuncio'),
+      riuscito: () => passi.push('messaggio'),
+    });
+    eq('uscita · il marcatore si scrive prima del reset e dell\'annuncio',
+      passi.join(' → '), 'notifiche → marcatore → reset → annuncio → messaggio');
+  }
+  {
+    const passi = [];
+    await eseguiLogout({
+      signOut: async () => ({ error: 'rete assente' }),
+      marca: () => passi.push('marcatore'),
+      reset: () => passi.push('reset'),
+      fallito: () => passi.push('errore'),
+    });
+    eq('uscita · un logout fallito NON scrive il marcatore', passi.join(' → '), 'errore');
+  }
+  {
+    /* lo storage può rifiutare: non deve impedire di uscire */
+    const passi = [];
+    const esito = await eseguiLogout({
+      signOut: async () => ({}),
+      marca: () => { throw new Error('storage negato'); },
+      reset: () => passi.push('reset'),
+      riuscito: () => passi.push('messaggio'),
+    });
+    eq('uscita · un marcatore non scrivibile non impedisce di uscire', esito, 'uscito');
+    eq('uscita · e il reset avviene lo stesso', passi.join(' → '), 'reset → messaggio');
+  }
+
+  /* --- 9. IL SECONDO DISPOSITIVO ha un localStorage suo --- */
+  {
+    const iphone = creaBrowser();
+    const computer = creaBrowser();
+    scriviMarcatore(utenteA, { ambiente: iphone.ambiente });
+
+    eq('due dispositivi · sull\'iPhone il marcatore c\'è',
+      leggiMarcatore({ ambiente: iphone.ambiente })?.userId, utenteA);
+    eq('due dispositivi · sul computer non c\'è',
+      leggiMarcatore({ ambiente: computer.ambiente }), null);
+
+    const suaSessione = sessioneDi(utenteA);
+    eq('due dispositivi · e il computer resta autenticato',
+      sessioneAmmessa(suaSessione, { ambiente: computer.ambiente }), suaSessione);
+  }
+
+  /* --- 10. IL SORGENTE: letto all'avvio, al risveglio, scritto e tolto --- */
+  {
+    const app = readFileSync(resolve(process.cwd(), 'src/App.jsx'), 'utf8');
+    const pulito = app.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+    ok('sorgente · all\'avvio la sessione passa dal marcatore',
+      /leggiSessione:\s*async\s*\(\)\s*=>\s*sessioneAmmessa\(await auth\.getSession\(\)\)/.test(pulito));
+    ok('sorgente · al risveglio si guarda il marcatore, non solo la sessione',
+      /sessioneValida:[\s\S]{0,240}marcatoreRiguarda\(leggiMarcatore\(\), id\)/.test(pulito));
+    ok('sorgente · il logout scrive il marcatore con l\'utente uscente',
+      /marca:\s*\(\)\s*=>\s*scriviMarcatore\(uscente\)/.test(pulito));
+    ok('sorgente · l\'utente si prende PRIMA del reset',
+      /const uscente = userRef\.current \|\| user\.id;[\s\S]{0,400}await eseguiLogout\(/.test(pulito));
+    ok('sorgente · e il marcatore si toglie solo dopo un accesso riuscito',
+      /if \(res\.error\)[\s\S]*?rimuoviMarcatore\(\);/.test(pulito));
+    ok('sorgente · prima di rileggere la sessione del nuovo accesso',
+      pulito.indexOf('rimuoviMarcatore();') < pulito.indexOf('const atteso = res.user.id;'));
   }
 }
 

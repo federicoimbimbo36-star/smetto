@@ -117,9 +117,9 @@ const localAuth = {
     return this.signOut();
   },
 
-  async haSessione() {
+  async idSessione() {
     const db = await readStore(AUTH_KEY, vuotoAuth);
-    return Boolean(db.session && db.users[db.session]);
+    return (db.session && db.users[db.session]) ? db.session : null;
   },
   async updateProfile(id, patch) {
     const db = await readStore(AUTH_KEY, vuotoAuth);

@@ -303,3 +303,123 @@ Rimettendo `signOut()` senza argomenti, tre controlli falliscono:
       atteso "{ scope: 'local' }", ottenuto ""
 ✗ sorgente · nessun signOut() senza argomenti
 ```
+
+---
+
+# Terza correzione: il marcatore di logout
+
+Il rilascio precedente **falliva ancora sul telefono**. Stesso iPhone, stesso
+Safari, due schede: logout in A, la scheda B restava dentro, e ricaricandola
+restava dentro lo stesso.
+
+## Perché i tre tentativi precedenti non bastavano
+
+| tentativo | perché non basta |
+|---|---|
+| `BroadcastChannel` | non arriva a una scheda che iOS ha congelato |
+| evento `storage` | idem: è un avviso in tempo reale, e per una scheda ferma quel tempo non passa |
+| controllo su `getSession()` al risveglio | **è qui l'errore che restava** |
+
+I primi due li sapevo. Il terzo era il mio, e va detto con precisione: il
+controllo al risveglio chiedeva **«c'è una sessione?»**, e dava per scontato che
+dopo il logout della scheda A la scheda B non ne trovasse più — perché lo
+storage è condiviso e A cancella la chiave.
+
+Sull'iPhone la trova. Una scheda ripristinata dal congelamento riparte con lo
+stato che aveva, compresa la sessione che il suo client `auth-js` teneva in
+memoria, e può riscriverla nello storage. Il ricaricamento la legge, e B rientra.
+
+L'errore di fondo era **dedurre uno stato dall'assenza di qualcosa**. Un'assenza
+non è un fatto: è un'ipotesi su cosa nessun altro ha scritto.
+
+Vale la pena notare che i test precedenti non potevano accorgersene:
+rappresentavano la scheda B *senza* sessione dopo il logout, cioè assumevano
+esattamente ciò che andava dimostrato.
+
+## Cosa fa adesso
+
+Il fatto si scrive. `src/utils/marcatoreLogout.js` mette in `localStorage`, in
+una chiave tutta sua (`smetto:uscito`), un marcatore:
+
+```json
+{ "tipo": "logout", "userId": "…", "quando": 1756…, "id": "…" }
+```
+
+Separato dalla sessione Supabase: non lo tocca `auth-js`, non lo porta via un
+`signOut`, non lo ripristina il congelamento di una scheda.
+
+**Non è un evento: è uno stato.** Si legge all'avvio dell'app, su
+`visibilitychange` e su `pageshow` — non si aspetta che qualcuno lo consegni. Se
+una scheda vede un marcatore riferito all'utente attualmente autenticato, esce,
+**anche se `getSession()` risponde ancora di sì**.
+
+Il canale e l'evento `storage` restano, ma solo per fare le cose subito quando
+si può: la correttezza non dipende più dalla loro consegna.
+
+### Due dettagli che non sono dettagli
+
+**Porta con sé l'utente.** Un marcatore senza nome sarebbe un interruttore
+generale: esco io dal telefono di casa, e la persona che entra dopo con il suo
+account viene sbattuta fuori da un logout che non è il suo. Il confronto è
+sull'identificativo.
+
+**Si cancella solo con un accesso riuscito.** Non a tempo, non alla prima
+lettura. Toglierlo prima rimetterebbe in piedi il difetto: una scheda che al
+secondo risveglio non trova più niente e torna a fidarsi della sessione. E si
+toglie **prima** di rileggere la sessione del nuovo accesso, altrimenti il
+marcatore del logout di prima chiuderebbe fuori il login di adesso.
+
+## Ordine delle operazioni nel logout
+
+```
+signOut({ scope: 'local' }) → notifiche → MARCATORE → reset → annuncio → messaggio
+```
+
+Il marcatore **dopo** il `signOut`, perché scriverlo per un logout che poi
+fallisce chiuderebbe fuori chi è rimasto legittimamente dentro. E **prima** del
+reset, perché `resetAuthState()` azzera `userRef` e senza l'identificativo il
+marcatore sarebbe anonimo. Se lo storage rifiuta la scrittura, si esce lo
+stesso: restano il canale e l'annuncio.
+
+## Modifiche al contratto
+
+`auth.haSessione()` è diventato `auth.idSessione()`: torna l'identificativo
+invece di un sì/no, perché il marcatore va confrontato con **quale** utente è
+dentro. Senza il nome, buttare fuori sarebbe una decisione presa al buio.
+
+La guardia al risveglio riceve `sessioneValida` invece di `haSessione`, e
+`suSessioneNonValida` invece di `suSessioneAssente`. I nomi contano: erano la
+domanda sbagliata scritta in chiaro.
+
+## I test
+
+Sezione 12 di `verifica/affidabilita.mjs`. Il controllo che prima mancava
+ricostruisce lo scenario del telefono passo per passo, compreso il pezzo che
+nessun test rappresentava:
+
+```
+marcatore · CASO REALE · dopo il logout la sessione di B è ancora leggibile
+marcatore · CASO REALE · getSession() della scheda B ricaricata risponde ancora
+marcatore · ed è proprio l'utente uscito
+marcatore · eppure l'app NON la ammette
+marcatore · un altro utente non viene toccato
+marcatore · leggerlo non lo consuma
+marcatore · dopo un accesso riuscito non c'è più
+due dispositivi · sul computer non c'è
+uscita · un logout fallito NON scrive il marcatore
+```
+
+Il caso reale gira su un `GoTrueClient` vero: dopo il logout locale di A la
+sessione viene rimessa nello storage — come fa Safari ripristinando la scheda —
+e un client nuovo (il ricaricamento di B) la legge davvero. A rifiutarla è la
+logica dell'app, non l'assenza del dato.
+
+Togliendo il controllo sul marcatore, quattro controlli falliscono:
+
+```
+✗ marcatore · ma all'avvio la sessione non viene ammessa
+      atteso null, ottenuto {"user":{"id":"utente-A"}}
+✗ marcatore · eppure l'app NON la ammette
+✗ marcatore · e il mio resta fuori
+✗ marcatore · e continua a valere al risveglio successivo
+```

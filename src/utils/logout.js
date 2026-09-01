@@ -28,6 +28,7 @@
 export async function eseguiLogout({
   signOut,
   spegniNotifiche,
+  marca,
   reset,
   annuncia,
   riuscito,
@@ -49,6 +50,18 @@ export async function eseguiLogout({
      telefono e non le tocca nessuno svuotando lo stato dell'app. Se
      restassero, l'account uscito continuerebbe a mandare avvisi. */
   try { await spegniNotifiche?.(); } catch { /* niente notifiche: non blocca l'uscita */ }
+
+  /* IL MARCATORE PRIMA DEL RESET, e per un motivo banale: `reset()`
+     azzera `userRef`, e senza l'identificativo dell'utente il marcatore
+     non si può scrivere. Dopo il `signOut`, però, non prima: un marcatore
+     scritto per un logout che poi fallisce chiuderebbe fuori una persona
+     che è rimasta legittimamente dentro.
+
+     Ed è quello che rende superfluo l'annuncio: da qui in poi il fatto è
+     scritto su questo dispositivo, e le altre schede lo trovano da sole
+     alla prima occhiata — all'avvio o al risveglio — anche se il
+     messaggio non è mai arrivato. */
+  try { marca?.(); } catch { /* storage negato: restano canale e annuncio */ }
 
   reset();
 

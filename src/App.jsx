@@ -18,6 +18,9 @@ import { creaSequenza, caricaSessione } from './utils/sessione';
 import { creaCanaleAuth, creaGuardiaRisveglio } from './utils/canaleAuth';
 import { eseguiLogout, creaUscitaAnnunciata } from './utils/logout';
 import {
+  scriviMarcatore, rimuoviMarcatore, sessioneAmmessa, leggiMarcatore, marcatoreRiguarda,
+} from './utils/marcatoreLogout';
+import {
   codiciDopoSync, gruppiDopoSync, membriDopoSync, attivoDopoSync, statoDopoSync,
 } from './utils/gruppiSync';
 import {
@@ -317,7 +320,11 @@ export default function App() {
 
   useEffect(() => {
     caricaSessione(sequenzaRef.current, {
-      leggiSessione: () => auth.getSession(),
+      /* IL MARCATORE SI LEGGE ANCHE QUI, all'avvio, non solo al risveglio.
+         È il caso provato sul telefono: la scheda B ricaricata trovava
+         ancora una sessione buona e rientrava. Adesso la sessione da sola
+         non basta a entrare — deve non risultare uscita da qui. */
+      leggiSessione: async () => sessioneAmmessa(await auth.getSession()),
       applicaProfilo: applyProfile,
       preparaRegistro: preparaLog,
       applicaRegistro: applicaLog,
@@ -441,10 +448,15 @@ export default function App() {
 
     guardiaRef.current = creaGuardiaRisveglio({
       dentro: () => Boolean(userRef.current || datiRef.current),
-      haSessione: async () => (auth.haSessione
-        ? auth.haSessione()
-        : Boolean(await auth.getSession())),
-      suSessioneAssente: () => ricevi(),
+      /* Non «c'è una sessione» ma «vale ancora»: una sessione che c'è ma
+         appartiene a un utente uscito da questo dispositivo non vale.
+         `idSessione` legge solo da localStorage: nessun giro in rete a
+         ogni cambio di scheda. */
+      sessioneValida: async () => {
+        const id = await auth.idSessione();
+        return Boolean(id) && !marcatoreRiguarda(leggiMarcatore(), id);
+      },
+      suSessioneNonValida: () => ricevi(),
     });
 
     return () => {
@@ -488,7 +500,9 @@ export default function App() {
         leggiSessione: async () => {
           const sessione = await auth.getSession();
           // se nel frattempo è cambiato ancora, questa non è la sessione attesa
-          return sessione?.user?.id === idOra ? sessione : null;
+          if (sessione?.user?.id !== idOra) return null;
+          // e comunque non si entra per conto di chi risulta uscito da qui
+          return sessioneAmmessa(sessione);
         },
         applicaProfilo: applyProfile,
         preparaRegistro: preparaLog,
@@ -746,6 +760,14 @@ export default function App() {
          `signIn` e la fine del caricamento può essere cambiata, e se
          quella vera non è più di chi ha appena fatto l'accesso non si
          applica niente. */
+      /* IL MARCATORE SI TOGLIE QUI, e prima di rileggere la sessione.
+         Se restasse, `sessioneAmmessa` rifiuterebbe la sessione appena
+         aperta da chi ha appena fatto l'accesso: il marcatore del logout
+         di prima chiuderebbe fuori il login di adesso. Si toglie a
+         accesso RIUSCITO — è l'unica cosa che lo cancella — e vale sia
+         per l'accesso sia per la registrazione. */
+      rimuoviMarcatore();
+
       sequenzaRef.current.brucia();
       const atteso = res.user.id;
       const esito = await caricaSessione(sequenzaRef.current, {
@@ -958,9 +980,17 @@ export default function App() {
       confirmLabel: 'Esci',
       onConfirm: async () => {
         setConfirmModal(null);
+        /* L'identificativo si prende ADESSO: `resetAuthState` lo azzera,
+           e senza di lui il marcatore sarebbe anonimo — cioè butterebbe
+           fuori chiunque altro usi questo browser. */
+        const uscente = userRef.current || user.id;
         await eseguiLogout({
           signOut: () => auth.signOut(),
           spegniNotifiche: () => annullaTappe(),
+          /* Il fatto si scrive prima di annunciarlo: l'annuncio è un
+             di più che arriva solo alle schede sveglie, il marcatore lo
+             trovano anche quelle che dormivano. */
+          marca: () => scriviMarcatore(uscente),
           reset: resetAuthState,
           annuncia: () => canaleRef.current?.annunciaLogout(),
           riuscito: () => showToast('Hai effettuato il logout.'),
