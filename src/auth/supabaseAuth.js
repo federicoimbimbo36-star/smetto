@@ -118,8 +118,17 @@ const supabaseAuth = {
     return { user: { ...profile, id: data.user.id, phone: profile.phone || phone } };
   },
 
+  /* L'ESITO SI RESTITUISCE, non si butta via.
+
+     `supabase.auth.signOut()` ha un percorso in cui esce con un errore e
+     LASCIA LA SESSIONE SUL DISPOSITIVO: quando la lettura della sessione
+     fallisce — token scaduto e rinnovo non riuscito perché la rete non
+     c'è — torna subito con l'errore senza cancellare niente. Ignorandolo,
+     l'app diceva «Hai effettuato il logout» con la sessione ancora
+     scritta, e bastava ricaricare per ritrovarsi dentro. */
   async signOut() {
-    await supabase.auth.signOut();
+    const { error } = await supabase.auth.signOut();
+    return error ? { error: error.message || 'logout non riuscito' } : {};
   },
 
   async updateProfile(id, patch) {

@@ -15,6 +15,8 @@ import {
 import auth from './auth';
 import { eliminaAccount } from './utils/account';
 import { creaSequenza, caricaSessione } from './utils/sessione';
+import { creaCanaleAuth } from './utils/canaleAuth';
+import { eseguiLogout } from './utils/logout';
 import {
   codiciDopoSync, gruppiDopoSync, membriDopoSync, attivoDopoSync, statoDopoSync,
 } from './utils/gruppiSync';
@@ -177,6 +179,7 @@ export default function App() {
      elenchi di dipendenze di effetti che devono girare una volta sola. */
   const sequenzaRef = useRef(null);
   if (!sequenzaRef.current) sequenzaRef.current = creaSequenza();
+  const canaleRef = useRef(null);
 
   function showToast(msg) {
     setToast(msg);
@@ -376,6 +379,35 @@ export default function App() {
   /*  In nessuno dei due casi si tocca il database: qui si sistema solo  */
   /*  quello che l'utente ha davanti.                                    */
   /* ------------------------------------------------------------------ */
+  /* ------------------------------------------------------------------ */
+  /*  IL LOGOUT ARRIVA ALLE ALTRE SCHEDE SUBITO                          */
+  /*                                                                     */
+  /*  `auth-js` un canale ce l'ha, ma se non riesce ad aprirlo lo scrive */
+  /*  in console e basta, e un ripiego non esiste: in tutta la libreria  */
+  /*  non c'è un ascoltatore dell'evento `storage`. Dove                 */
+  /*  `BroadcastChannel` manca o fallisce — Safari in navigazione        */
+  /*  privata — la scheda rimasta indietro continuava a funzionare, con  */
+  /*  i dati dell'account in chiaro, finché non veniva ricaricata.       */
+  /*                                                                     */
+  /*  Il reset è LO STESSO del logout locale, `resetAuthState`: dati,    */
+  /*  gruppi, modali, riferimenti, e ritorno alla schermata di accesso.  */
+  /*  Il guardiano su `userRef` evita il doppio reset quando arrivano    */
+  /*  tutti e due gli avvisi — il nostro e quello di `auth-js` — e il    */
+  /*  canale non ascolta i propri annunci, quindi non si formano anelli. */
+  /*                                                                     */
+  /*  Fra browser e dispositivi diversi non cambia niente: questo canale */
+  /*  parla solo dentro lo stesso browser.                               */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    canaleRef.current = creaCanaleAuth({
+      onLogout: () => {
+        if (!userRef.current && !datiRef.current) return;   // già usciti
+        resetAuthState();
+      },
+    });
+    return () => { canaleRef.current?.chiudi(); canaleRef.current = null; };
+  }, []);
+
   useEffect(() => {
     if (!auth.onAuthChange) return undefined;
     let vivo = true;
@@ -868,8 +900,19 @@ export default function App() {
       body: 'Dovrai effettuare di nuovo l’accesso per continuare a registrare.',
       confirmLabel: 'Esci',
       onConfirm: async () => {
-        await auth.signOut(); await annullaTappe().catch(() => {});
-        setConfirmModal(null); resetAuthState(); showToast('Hai effettuato il logout.');
+        setConfirmModal(null);
+        await eseguiLogout({
+          signOut: () => auth.signOut(),
+          spegniNotifiche: () => annullaTappe(),
+          reset: resetAuthState,
+          annuncia: () => canaleRef.current?.annunciaLogout(),
+          riuscito: () => showToast('Hai effettuato il logout.'),
+          /* Niente «Hai effettuato il logout» se il logout non è
+             riuscito: si resta dentro, e lo si dice. Dire il contrario
+             lasciava la sessione scritta sul dispositivo e l'utente
+             convinto di essere uscito. */
+          fallito: () => showToast('Non è stato possibile uscire. Controlla la rete e riprova.'),
+        });
       },
     });
   }

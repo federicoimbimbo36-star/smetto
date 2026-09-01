@@ -102,10 +102,12 @@ const localAuth = {
     await writeStore(AUTH_KEY, db);      // salva anche l'eventuale migrazione dell'hash
     return { user: { id, ...rec.profile } };
   },
+  // stessa forma di supabaseAuth: chi chiama non deve sapere quale dei due è
   async signOut() {
     const db = await readStore(AUTH_KEY, vuotoAuth);
     db.session = null;
     await writeStore(AUTH_KEY, db);
+    return {};
   },
   async updateProfile(id, patch) {
     const db = await readStore(AUTH_KEY, vuotoAuth);

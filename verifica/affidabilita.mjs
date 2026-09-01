@@ -16,6 +16,8 @@ import { creaSequenza, caricaSessione } from '../src/utils/sessione.js';
 import {
   codiciDopoSync, gruppiDopoSync, membriDopoSync, attivoDopoSync, statoDopoSync,
 } from '../src/utils/gruppiSync.js';
+import { creaCanaleAuth, CHIAVE_CANALE } from '../src/utils/canaleAuth.js';
+import { eseguiLogout } from '../src/utils/logout.js';
 
 let passati = 0;
 const falliti = [];
@@ -1298,6 +1300,274 @@ const T = 1_700_000_000_000;
     const { codici, daTogliere } = codiciDopoSync(['BBBBBB'], ['AAAAAA']);
     eq('gara · un morto non più in lista non si toglie', daTogliere.length, 0);
     eq('gara · e la lista resta com\'è', codici.join(','), 'BBBBBB');
+  }
+}
+
+/* ================================================================== */
+/* 9. IL LOGOUT FRA SCHEDE DELLO STESSO BROWSER                        */
+/*                                                                     */
+/* Due schede, stesso account, stesso browser. Logout nella prima: la  */
+/* seconda restava utilizzabile, e dopo un ricaricamento manuale        */
+/* restava pure autenticata. Su un computer condiviso è l'account di    */
+/* qualcun altro lasciato aperto.                                       */
+/*                                                                     */
+/* Due cause, e vanno provate tutte e due.                              */
+/*                                                                     */
+/* La prima: `signOut()` non restituiva niente, e `supabase.auth        */
+/* .signOut()` ha un percorso in cui esce con un errore e LASCIA LA     */
+/* SESSIONE SCRITTA. L'app diceva «Hai effettuato il logout» comunque.  */
+/*                                                                     */
+/* La seconda: `auth-js` usa solo `BroadcastChannel` e, se non riesce   */
+/* ad aprirlo, lo scrive in console e basta — di ascoltatori            */
+/* dell'evento `storage` in quella libreria non ce n'è nessuno.         */
+/* ================================================================== */
+{
+  /* --- un browser finto: due schede, un BroadcastChannel, un localStorage --- */
+  const creaBrowser = ({ conBroadcast = true, conStorage = true } = {}) => {
+    const canali = new Map();          // nome → elenco di istanze
+    const memoria = new Map();
+    const schede = [];
+
+    class FintoCanale {
+      constructor(nome) {
+        this.nome = nome;
+        this.chiuso = false;
+        this.onmessage = null;
+        if (!canali.has(nome)) canali.set(nome, []);
+        canali.get(nome).push(this);
+      }
+
+      postMessage(dato) {
+        if (this.chiuso) throw new Error('canale chiuso');
+        canali.get(this.nome).forEach((c) => {
+          if (c !== this && !c.chiuso) c.onmessage?.({ data: dato });
+        });
+      }
+
+      close() { this.chiuso = true; }
+    }
+
+    const browser = {
+      schede,
+      apriScheda(nome) {
+        const ascoltatori = [];
+        const ambiente = {
+          addEventListener: conStorage
+            ? (t, fn) => { if (t === 'storage') ascoltatori.push(fn); }
+            : undefined,
+          removeEventListener: conStorage
+            ? (t, fn) => {
+              const i = ascoltatori.indexOf(fn); if (i >= 0) ascoltatori.splice(i, 1);
+            }
+            : undefined,
+          localStorage: {
+            setItem(chiave, valore) {
+              const prima = memoria.get(chiave) ?? null;
+              memoria.set(chiave, valore);
+              if (prima === valore) return;      // niente evento se non cambia
+              schede.forEach((s) => {
+                if (s.nome === nome) return;     // `storage` non arriva a chi scrive
+                s.ascoltatori.slice().forEach((fn) => fn({ key: chiave, newValue: valore }));
+              });
+            },
+            getItem: (k) => memoria.get(k) ?? null,
+          },
+        };
+        if (conBroadcast) ambiente.BroadcastChannel = FintoCanale;
+        const scheda = { nome, ascoltatori, resetati: 0, ambiente };
+        scheda.canale = creaCanaleAuth({
+          ambiente,
+          onLogout: () => { scheda.resetati += 1; },
+        });
+        schede.push(scheda);
+        return scheda;
+      },
+    };
+    return browser;
+  };
+
+  /* --- 1. logout nella scheda A → la scheda B viene resettata --- */
+  {
+    const browser = creaBrowser();
+    const a = browser.apriScheda('A');
+    const b = browser.apriScheda('B');
+
+    a.canale.annunciaLogout();
+
+    eq('logout · la scheda B viene resettata', b.resetati, 1);
+    eq('logout · e la scheda A non resetta se stessa', a.resetati, 0);
+  }
+
+  /* --- 2. con tre schede si resettano tutte quelle rimaste --- */
+  {
+    const browser = creaBrowser();
+    const a = browser.apriScheda('A');
+    const b = browser.apriScheda('B');
+    const c = browser.apriScheda('C');
+    a.canale.annunciaLogout();
+    eq('logout · anche la terza scheda si resetta', b.resetati + c.resetati, 2);
+    eq('logout · una sola volta ciascuna', `${b.resetati}${c.resetati}`, '11');
+  }
+
+  /* --- 3. NIENTE BroadcastChannel: deve funzionare lo stesso ---
+     È il caso di Safari in navigazione privata, quello che lasciava la
+     seconda scheda dentro. `auth-js` qui si ferma; il canale dell'app no. */
+  {
+    const browser = creaBrowser({ conBroadcast: false });
+    const a = browser.apriScheda('A');
+    const b = browser.apriScheda('B');
+
+    a.canale.annunciaLogout();
+
+    eq('logout · senza BroadcastChannel passa dall\'evento storage', b.resetati, 1);
+    eq('logout · e chi annuncia non si risveglia da solo', a.resetati, 0);
+    ok('logout · il messaggio è finito in localStorage',
+      Boolean(a.ambiente.localStorage.getItem(CHIAVE_CANALE)));
+  }
+
+  /* --- 4. tutte e due le strade aperte: UN SOLO reset ---
+     Il messaggio arriva dal canale e dall'evento storage. Resettare due
+     volte non romperebbe niente, ma è il genere di doppione che poi si
+     incastra con un caricamento in corso. */
+  {
+    const browser = creaBrowser({ conBroadcast: true, conStorage: true });
+    const a = browser.apriScheda('A');
+    const b = browser.apriScheda('B');
+    a.canale.annunciaLogout();
+    eq('logout · con entrambe le strade il reset è uno solo', b.resetati, 1);
+  }
+
+  /* --- 5. due logout di fila arrivano tutti e due ---
+     Riscrivere in localStorage lo STESSO valore non fa scattare l'evento:
+     senza un contatore che cambia, il secondo logout non sarebbe partito. */
+  {
+    const browser = creaBrowser({ conBroadcast: false });
+    const a = browser.apriScheda('A');
+    const b = browser.apriScheda('B');
+    a.canale.annunciaLogout();
+    a.canale.annunciaLogout();
+    eq('logout · due annunci di fila arrivano tutti e due', b.resetati, 2);
+  }
+
+  /* --- 6. una scheda chiusa non riceve più niente --- */
+  {
+    const browser = creaBrowser();
+    const a = browser.apriScheda('A');
+    const b = browser.apriScheda('B');
+    b.canale.chiudi();
+    a.canale.annunciaLogout();
+    eq('logout · una scheda chiusa non viene più toccata', b.resetati, 0);
+  }
+
+  /* --- 7. messaggi estranei non fanno niente --- */
+  {
+    const browser = creaBrowser({ conBroadcast: false });
+    const a = browser.apriScheda('A');
+    const b = browser.apriScheda('B');
+    a.ambiente.localStorage.setItem('smetto:kv:qualcosa', '{"tipo":"logout"}');
+    eq('logout · un\'altra chiave non resetta niente', b.resetati, 0);
+    a.ambiente.localStorage.setItem(CHIAVE_CANALE, 'non è json');
+    eq('logout · un messaggio illeggibile non resetta niente', b.resetati, 0);
+    a.ambiente.localStorage.setItem(CHIAVE_CANALE, '{"tipo":"altro","da":"x","quando":1,"n":1}');
+    eq('logout · un messaggio di altro tipo non resetta niente', b.resetati, 0);
+  }
+
+  /* ================================================================ */
+  /* LA SEQUENZA DI USCITA: e se Supabase dice di no?                  */
+  /* ================================================================ */
+
+  const creaSchermoLogout = () => ({
+    resetati: 0, annunci: 0, notificheSpente: 0, toast: null, errore: null,
+  });
+  const opzioni = (schermo, signOut) => ({
+    signOut,
+    spegniNotifiche: async () => { schermo.notificheSpente += 1; },
+    reset: () => { schermo.resetati += 1; },
+    annuncia: () => { schermo.annunci += 1; },
+    riuscito: () => { schermo.toast = 'Hai effettuato il logout.'; },
+    fallito: () => { schermo.errore = 'Non è stato possibile uscire. Controlla la rete e riprova.'; },
+  });
+
+  /* --- 8. uscita riuscita --- */
+  {
+    const schermo = creaSchermoLogout();
+    eq('uscita · riuscita', await eseguiLogout(opzioni(schermo, async () => ({}))), 'uscito');
+    eq('uscita · lo stato viene resettato', schermo.resetati, 1);
+    eq('uscita · le notifiche di sistema si spengono', schermo.notificheSpente, 1);
+    eq('uscita · le altre schede vengono avvisate', schermo.annunci, 1);
+    eq('uscita · e il messaggio arriva', schermo.toast, 'Hai effettuato il logout.');
+    eq('uscita · senza nessun errore', schermo.errore, null);
+  }
+
+  /* --- 9. SUPABASE RESTITUISCE UN ERRORE ---
+     È il caso che lasciava la sessione scritta sul dispositivo e l'utente
+     convinto di essere uscito. */
+  {
+    const schermo = creaSchermoLogout();
+    const esito = await eseguiLogout(opzioni(schermo, async () => ({ error: 'rete assente' })));
+
+    eq('errore · la sequenza si dichiara fallita', esito, 'errore');
+    eq('errore · NESSUN messaggio di logout riuscito', schermo.toast, null);
+    eq('errore · e lo stato NON viene resettato', schermo.resetati, 0);
+    eq('errore · le altre schede non vengono avvisate', schermo.annunci, 0);
+    ok('errore · l\'utente viene avvisato che non è uscito', Boolean(schermo.errore));
+  }
+
+  /* --- 10. e se signOut lancia un'eccezione, invece di restituire l'errore --- */
+  {
+    const schermo = creaSchermoLogout();
+    const esito = await eseguiLogout(opzioni(schermo, async () => {
+      throw new Error('connessione interrotta');
+    }));
+    eq('errore · un\'eccezione vale come un errore', esito, 'errore');
+    eq('errore · e nemmeno lì si dice che è andata bene', schermo.toast, null);
+    eq('errore · niente reset', schermo.resetati, 0);
+  }
+
+  /* --- 11. le notifiche che non si spengono non bloccano l'uscita ---
+     Uscire deve riuscire anche se il telefono non lascia toccare le
+     notifiche: il contrario vorrebbe dire non poter uscire. */
+  {
+    const schermo = creaSchermoLogout();
+    const opz = opzioni(schermo, async () => ({}));
+    opz.spegniNotifiche = async () => { throw new Error('permesso negato'); };
+    eq('uscita · un guasto alle notifiche non impedisce di uscire',
+      await eseguiLogout(opz), 'uscito');
+    eq('uscita · lo stato viene resettato lo stesso', schermo.resetati, 1);
+  }
+
+  /* --- 12. l'annuncio arriva DOPO il reset locale ---
+     Se partisse prima, le altre schede comincerebbero a pulirsi mentre
+     questa è ancora piena. */
+  {
+    const ordine = [];
+    await eseguiLogout({
+      signOut: async () => ({}),
+      spegniNotifiche: async () => ordine.push('notifiche'),
+      reset: () => ordine.push('reset'),
+      annuncia: () => ordine.push('annuncio'),
+      riuscito: () => ordine.push('messaggio'),
+      fallito: () => ordine.push('errore'),
+    });
+    eq('uscita · l\'ordine è notifiche, reset, annuncio, messaggio',
+      ordine.join(' → '), 'notifiche → reset → annuncio → messaggio');
+  }
+
+  /* --- 13. il sorgente resta agganciato --- */
+  {
+    const app = readFileSync(resolve(process.cwd(), 'src/App.jsx'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+    ok('uscita · App.jsx passa da eseguiLogout', /eseguiLogout\(\{/.test(app));
+    ok('uscita · e non chiama più signOut per conto suo',
+      !/await auth\.signOut\(\);/.test(app));
+    ok('uscita · il canale fra schede è agganciato', /creaCanaleAuth\(\{/.test(app));
+    ok('uscita · chi riceve il logout usa lo stesso reset del logout locale',
+      /onLogout:[\s\S]{0,160}resetAuthState\(\)/.test(app));
+    ok('uscita · e il canale viene chiuso allo smontaggio', /canaleRef\.current\?\.chiudi\(\)/.test(app));
+
+    const sa = readFileSync(resolve(process.cwd(), 'src/auth/supabaseAuth.js'), 'utf8');
+    ok('uscita · supabaseAuth restituisce l\'errore', /return error \?/.test(sa));
   }
 }
 
