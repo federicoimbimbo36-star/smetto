@@ -1557,8 +1557,11 @@ const T = 1_700_000_000_000;
       riuscito: () => ordine.push('messaggio'),
       fallito: () => ordine.push('errore'),
     });
-    eq('uscita · l\'ordine è notifiche, reset, annuncio, messaggio',
-      ordine.join(' → '), 'notifiche → reset → annuncio → messaggio');
+    /* Le notifiche sono passate in fondo, e senza `await`: prima si
+       scrive lo stato — marcatore, reset, annuncio — poi si spegne
+       quello che riguarda il futuro. */
+    eq('uscita · l\'ordine è reset, annuncio, messaggio, poi le notifiche',
+      ordine.join(' → '), 'reset → annuncio → messaggio → notifiche');
   }
 
   /* --- 13. il sorgente resta agganciato --- */
@@ -2618,7 +2621,106 @@ const T = 1_700_000_000_000;
       riuscito: () => passi.push('messaggio'),
     });
     eq('uscita · il marcatore si scrive prima del reset e dell\'annuncio',
-      passi.join(' → '), 'notifiche → marcatore → reset → annuncio → messaggio');
+      passi.slice(0, 4).join(' → '), 'marcatore → reset → annuncio → messaggio');
+    /* le notifiche partono dopo, senza far aspettare nessuno */
+    await new Promise((r) => setTimeout(r, 20));
+    eq('uscita · e le notifiche si spengono per ultime',
+      passi[passi.length - 1], 'notifiche');
+    eq('uscita · una volta sola', passi.filter((x) => x === 'notifiche').length, 1);
+  }
+
+  /* --- 8-bis. LE NOTIFICHE CHE NON RISPONDONO MAI ---
+     Era questo il difetto che teneva viva la scheda B. `spegniNotifiche`
+     chiama `annullaTappe()`, che passa da una coda e può restare in
+     attesa. Stando PRIMA del marcatore e con un `await` davanti, fermava
+     la sequenza dopo il `signOut`: la scheda A sembrava uscita, ma il
+     marcatore non veniva scritto e l'annuncio non partiva — e senza
+     quello scritto la scheda B resta utilizzabile anche ricaricata.
+
+     Un'attesa che non finisce non è un errore: nessun `catch` la prende.
+     Andava tolta l'attesa, non protetta. Qui si simula esattamente
+     quello: una promessa che non si risolve mai. */
+  {
+    let avviata = 0;
+    const conteggi = { marca: 0, reset: 0, annuncia: 0, riuscito: 0 };
+
+    const esito = await eseguiLogout({
+      signOut: async () => ({}),
+      spegniNotifiche: () => {
+        avviata += 1;
+        return new Promise(() => { /* non si risolve MAI */ });
+      },
+      marca: () => { conteggi.marca += 1; },
+      reset: () => { conteggi.reset += 1; },
+      annuncia: () => { conteggi.annuncia += 1; },
+      riuscito: () => { conteggi.riuscito += 1; },
+    });
+
+    eq('notifiche appese · il logout finisce lo stesso', esito, 'uscito');
+    eq('notifiche appese · il marcatore viene scritto', conteggi.marca, 1);
+    eq('notifiche appese · l\'interfaccia viene resettata', conteggi.reset, 1);
+    eq('notifiche appese · l\'annuncio parte', conteggi.annuncia, 1);
+    eq('notifiche appese · il messaggio di riuscita arriva', conteggi.riuscito, 1);
+    eq('notifiche appese · e lo spegnimento è stato comunque avviato', avviata, 1);
+
+    /* e nessuno dei passi si ripete quando la promessa resta appesa */
+    await new Promise((r) => setTimeout(r, 20));
+    eq('notifiche appese · nessun passo si ripete',
+      `${conteggi.marca}${conteggi.reset}${conteggi.annuncia}${conteggi.riuscito}${avviata}`,
+      '11111');
+  }
+
+  /* --- 8-ter. LE NOTIFICHE CHE FALLISCONO non devono lasciare rifiuti ---
+     Una promessa rifiutata e non raccolta diventa `unhandledrejection`:
+     in un browser è un errore in console, e su alcune configurazioni
+     abbatte la pagina. L'uscita è già avvenuta, non deve pagarla lei. */
+  {
+    const rifiuti = [];
+    const raccogli = (e) => rifiuti.push(e);
+    process.on('unhandledRejection', raccogli);
+
+    const esito = await eseguiLogout({
+      signOut: async () => ({}),
+      spegniNotifiche: async () => { throw new Error('coda bloccata'); },
+      marca: () => {},
+      reset: () => {},
+      riuscito: () => {},
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    process.off('unhandledRejection', raccogli);
+
+    eq('notifiche rotte · il logout riesce lo stesso', esito, 'uscito');
+    eq('notifiche rotte · nessuna promessa rifiutata resta scoperta', rifiuti.length, 0);
+  }
+  {
+    /* e uno `spegniNotifiche` che esplode subito, prima di restituire
+       una promessa, non deve buttare giù la sequenza */
+    const passi = [];
+    const esito = await eseguiLogout({
+      signOut: async () => ({}),
+      spegniNotifiche: () => { throw new Error('esplode subito'); },
+      marca: () => passi.push('marcatore'),
+      reset: () => passi.push('reset'),
+      riuscito: () => passi.push('messaggio'),
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    eq('notifiche rotte · anche se esplode subito si esce', esito, 'uscito');
+    eq('notifiche rotte · con tutti i passi fatti',
+      passi.join(' → '), 'marcatore → reset → messaggio');
+  }
+
+  /* --- 8-quater. NEL SORGENTE non deve restare l'attesa --- */
+  {
+    const sorgente = readFileSync(resolve(process.cwd(), 'src/utils/logout.js'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+    ok('sorgente · non esiste più `await spegniNotifiche` in logout.js',
+      !/await\s+spegniNotifiche/.test(sorgente));
+    ok('sorgente · lo spegnimento è avviato senza attenderlo',
+      /then\(\(\) => spegniNotifiche\?\.\(\)\)/.test(sorgente));
+    ok('sorgente · con il rifiuto raccolto', /\.catch\(/.test(sorgente));
+    ok('sorgente · e parte dopo marcatore, reset e annuncio',
+      sorgente.lastIndexOf('spegniNotifiche') > sorgente.indexOf('annuncia?.()'));
   }
   {
     const passi = [];

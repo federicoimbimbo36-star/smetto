@@ -46,11 +46,6 @@ export async function eseguiLogout({
     return 'errore';
   }
 
-  /* Le notifiche di sistema PRIMA del reset: sono già programmate nel
-     telefono e non le tocca nessuno svuotando lo stato dell'app. Se
-     restassero, l'account uscito continuerebbe a mandare avvisi. */
-  try { await spegniNotifiche?.(); } catch { /* niente notifiche: non blocca l'uscita */ }
-
   /* IL MARCATORE PRIMA DEL RESET, e per un motivo banale: `reset()`
      azzera `userRef`, e senza l'identificativo dell'utente il marcatore
      non si può scrivere. Dopo il `signOut`, però, non prima: un marcatore
@@ -69,6 +64,41 @@ export async function eseguiLogout({
      quando le altre cominciano a pulirsi, e non c'è un momento in cui
      due schede si rispondono a vicenda. */
   try { annuncia?.(); } catch { /* canale non disponibile */ }
+
+  /* LE NOTIFICHE PER ULTIME, E SENZA ASPETTARLE.
+     Qui stava il difetto che teneva in vita la scheda B.
+
+     Prima questa riga era `await spegniNotifiche?.()` e stava PRIMA del
+     marcatore. `spegniNotifiche` chiama `annullaTappe()`, che passa da
+     una coda di operazioni e può restare in attesa — un lotto in corso,
+     un permesso mai risposto, il ponte Capacitor che non torna. Quando
+     restava lì, la sequenza si fermava dopo il `signOut`: Supabase aveva
+     già disconnesso la scheda A e l'utente vedeva la schermata di
+     accesso, ma il marcatore `smetto:uscito` non veniva mai scritto e
+     l'annuncio non partiva. La scheda B restava utilizzabile, anche
+     ricaricata, perché il fatto su cui si regge tutto — «l'utente X è
+     uscito da qui» — non era stato scritto da nessuno.
+
+     Un'attesa che non finisce non è un errore: nessun `catch` la prende,
+     e il `try` intorno non serviva a niente. Andava tolta l'attesa, non
+     protetta.
+
+     Ordine invertito, quindi: prima si scrive lo stato — marcatore,
+     reset, annuncio — poi si spengono le notifiche. Spegnerle resta
+     necessario, altrimenti l'account uscito continua a mandare avvisi
+     già programmati nel telefono; ma è l'unico passo che può permettersi
+     di arrivare in ritardo, perché riguarda il futuro e non la verità di
+     adesso. Se non arriva mai, l'utente è uscito lo stesso, e ovunque.
+
+     `.catch(() => {})` perché una promessa rifiutata e non raccolta
+     diventa un `unhandledrejection`; il `try` esterno copre invece uno
+     `spegniNotifiche` che esplode subito, prima ancora di restituire
+     una promessa. */
+  try {
+    Promise.resolve()
+      .then(() => spegniNotifiche?.())
+      .catch(() => { /* le notifiche restano: l'uscita è già avvenuta */ });
+  } catch { /* niente notifiche: non blocca l'uscita */ }
 
   riuscito?.();
   return 'uscito';
