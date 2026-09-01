@@ -392,3 +392,157 @@ falliscono**.
 | `npm run verifica:completa` | **1.772**, da 1.730 |
 
 La Fase 2 **non è conclusa**: manca il collaudo manuale.
+
+---
+
+# Quinto giro — i gruppi sciolti che ritornavano
+
+31 agosto 2026. Correzione limitata a questo punto.
+
+## Il difetto
+
+Quando `groups.fetch` diceva che un gruppo non esiste più, `sync` faceva
+due cose sbagliate in una riga:
+
+```js
+const next = { ...datiRef.current, groups: restano };
+setDati(next);
+writeStore(logKey(user.id), next);
+```
+
+**Toglieva il codice dalla sola lista `groups`.** Ma `groups` non è più la
+verità: da quando uscita e rientro sono operazioni versionate, la verità è
+`gruppiStato`, e `groups` è una proiezione che `normalizzaRegistro`
+rigenera. Con `gruppiStato` che diceva ancora `true`, il gruppo sciolto
+tornava alla **prima lettura del registro** — bastava riaprire l'app, non
+serviva nemmeno un secondo dispositivo. Riprodotto:
+
+```
+subito dopo la rimozione:              [ 'BBBBBB' ]
+dopo una normalizzazione:              [ 'BBBBBB', 'AAAAAA' ]
+dopo la fusione con una copia indietro:[ 'BBBBBB', 'AAAAAA' ]
+gruppiStato dice ancora: { AAAAAA: true, BBBBBB: true }
+```
+
+**E scriveva il registro a mano**, saltando `timbra`: la modifica non
+aveva orologio, quindi anche registrando l'uscita non avrebbe avuto una
+versione con cui vincere su una copia più vecchia.
+
+## La correzione
+
+`src/App.jsx`, dentro `sync`, dove si calcolano `morti` e `restano`:
+
+```js
+const statoAggiornato = { ...(datiRef.current.gruppiStato || {}) };
+morti.forEach((c) => { statoAggiornato[c] = false; });
+salva({ ...datiRef.current, groups: restano, gruppiStato: statoAggiornato });
+```
+
+Uno scioglimento è un'uscita, e va scritta dove si scrivono le uscite. Si
+passa da `salva`, cioè dallo stesso percorso di join e leave: timbra con
+`Date.now()`, aggiorna `datiRef`, aggiorna lo stato, scrive sul
+dispositivo e pubblica. Nessuna scrittura diretta.
+
+Solo i `morti`, mai gli `incerti`: sul «non lo so» non si tocca niente, e
+questo non cambia. L'uscita volontaria non è stata toccata.
+
+## Test — sezione 7, 21 controlli
+
+Il gruppo sciolto sparisce; l'uscita è registrata in `gruppiStato` con il
+suo orologio; una rilettura del registro non lo riporta; una modifica non
+collegata seguita da salvataggio non lo fa ricomparire; una copia rimasta
+indietro non lo ripristina, nei due versi e fondendo tre volte; quello che
+si rilegge dal dispositivo coincide con quello che l'app mostra; un
+gruppo incerto non viene toccato; se il gruppo viene ricreato ci si può
+rientrare. Più due controlli sul sorgente, perché il modello non si
+scolli dalla funzione vera.
+
+**Controprova**: ripristinando il comportamento precedente nel modello e
+in `App.jsx`, **11 controlli falliscono**.
+
+## Esiti
+
+| | |
+|---|---|
+| `npm run lint` | 0 errori, 0 avvisi |
+| `npm run build` | verde, 2,29 s |
+| avviso di build | chunk da 514,10 kB, sopra la soglia di 500 kB di Vite |
+| `npm run verifica:completa` | **1.793**, da 1.772 |
+
+La Fase 2 **non è conclusa**: questa è solo la correzione dei gruppi
+sciolti.
+
+---
+
+# Sesto giro — la gara della sincronizzazione dei gruppi
+
+31 agosto 2026.
+
+## Il difetto, riprodotto
+
+`sync()` catturava la lista all'avvio e la riusava alla fine, dopo diverse
+richieste di rete. Entrando in un gruppo nel frattempo:
+
+```
+lista al momento del salvataggio : AAAAAA, BBBBBB, CCCCCC
+lista salvata da sync            : BBBBBB
+CCCCCC nella schermata gruppi?   : NO — sparito
+membri di CCCCCC in memoria?     : NO — cancellati
+gruppo attivo dopo sync          : BBBBBB ← spostato via
+```
+
+Quattro posti, un solo errore: prendere per buono lo stato di prima.
+
+**Una precisazione che la controprova ha reso evidente.** La lista
+*persistita* era già protetta dalla correzione precedente: `salva` passa
+da `normalizzaRegistro`, che rigenera `groups` da `gruppiStato`, e
+`gruppiStato.CCCCCC` era rimasto a `true`. Il danno che restava era sullo
+stato dell'interfaccia — schede a schermo, classifiche in memoria, gruppo
+aperto — più il fatto che `daTogliere` conteneva anche gruppi non più in
+lista. Meno grave di come temevo, ma visibile: il gruppo appena aggiunto
+spariva dalla schermata sotto le mani dell'utente.
+
+## Strategia
+
+Estratto `src/utils/gruppiSync.js`, cinque funzioni pure che App.jsx usa
+davvero e che i banchi chiamano invece di ricopiarle:
+
+- `codiciDopoSync(attuali, morti)` — parte dalla lista di ADESSO e toglie
+  solo i morti che ci sono ancora; restituisce anche `daTogliere`;
+- `gruppiDopoSync(prima, letti, codici)` — scheda nuova se c'è, quella di
+  prima se no (copre l'incerto e il gruppo entrato nel frattempo);
+- `membriDopoSync(prima, letti, codici)` — stessa regola sulle classifiche;
+- `attivoDopoSync(attivo, codici)` — si cambia solo se quello aperto non
+  c'è più;
+- `statoDopoSync(stato, daTogliere)` — segna a `false` solo i verificati.
+
+In `sync()` la coda ora legge `datiRef.current` e non `codici`. Rimossi
+`senzaMembri` e `daTenere`, che calcolavano sulla lista vecchia quali
+classifiche tenere e che `membriDopoSync` fa per tutti.
+
+## Casi coperti — sezione 8, 30 controlli
+
+Lista `AAAAAA, BBBBBB`, sync lento, ingresso in `CCCCCC`, `AAAAAA`
+sciolto → lista finale `BBBBBB, CCCCCC`; `AAAAAA` a `false` con orologio
+nuovo; `CCCCCC` resta `true` **con il proprio orologio**, e sopravvive a
+una rilettura e a una fusione con una copia indietro, nei due versi;
+schede e classifiche di `CCCCCC` intatte, quelle di `AAAAAA` sparite;
+`CCCCCC` resta il gruppo aperto; la stessa gara senza morti non perde
+niente; un gruppo incerto non viene toccato nemmeno durante la gara; un
+morto non più in lista non viene tolto due volte.
+
+**Controprova**: riportando le funzioni al comportamento precedente,
+**8 controlli falliscono** — tutti sullo stato dell'interfaccia e sul
+conteggio dei gruppi da togliere.
+
+## Esiti
+
+| | |
+|---|---|
+| `npm ci` | 238 pacchetti, 0 vulnerabilità |
+| `npm run lint` | 0 errori, 0 avvisi |
+| `npm run build` | verde, 2,25 s |
+| avviso di build | chunk da 514,49 kB, sopra la soglia di 500 kB di Vite |
+| `npm run verifica:completa` | **1.834**, da 1.793 |
+
+La Fase 2 **non è conclusa**.

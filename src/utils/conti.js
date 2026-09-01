@@ -416,10 +416,14 @@ export function calcolaConti(base, adesso = Date.now()) {
   });
 
   /* Il numero che finisce a schermo, arrotondato una volta sola e QUI.
-     `scartoIntero` esiste perché la Home vuole la versione intera: se
-     riarrotondasse quella a un decimale otterrebbe 87 dove il valore vero
-     è 86 (86,46 → 86,5 → 87). Arrotondare due volte non è come
-     arrotondare una. */
+     Arrotondare due volte non è come arrotondare una: 86,46 → 86,5 → 87,
+     mentre il valore vero è 86. Per questo l'arrotondamento sta qui e non
+     nelle schermate, che si limitano a scegliere quale valore mostrare.
+
+     `scartoIntero` non lo usa più nessuna schermata — la Home mostra
+     `scartoMostrato`, con una cifra decimale, per non dire «20 sigarette»
+     accanto a un costo di 19,94 — ma resta esposto: è la versione intera
+     dello stesso scarto, e i controlli la verificano. */
   const scartoMostrato = Math.round(Math.abs(scartoRitmo) * 10) / 10;
 
   return {

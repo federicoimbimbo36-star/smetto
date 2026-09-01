@@ -13,6 +13,9 @@ import { resolve } from 'node:path';
 import { normalizzaRegistro, fondiRegistri, timbra, fondiValore } from '../src/utils/fusione.js';
 import { creaKvSincronizzato } from '../src/utils/sincronizza.js';
 import { creaSequenza, caricaSessione } from '../src/utils/sessione.js';
+import {
+  codiciDopoSync, gruppiDopoSync, membriDopoSync, attivoDopoSync, statoDopoSync,
+} from '../src/utils/gruppiSync.js';
 
 let passati = 0;
 const falliti = [];
@@ -961,6 +964,340 @@ const T = 1_700_000_000_000;
     const senzaNiente = normalizzaRegistro({ ...vuoto(), gruppiStato: undefined }, vuoto);
     eq('compatibilità · un registro senza nessuna delle due liste si legge lo stesso',
       Object.keys(senzaNiente.gruppiStato).length, 0);
+  }
+}
+
+/* ================================================================== */
+/* 7. UN GRUPPO SCIOLTO NON DEVE TORNARE                               */
+/*                                                                     */
+/* Quando `groups.fetch` dice che un gruppo non esiste più, `sync` lo   */
+/* toglieva dalla sola lista `groups` e scriveva il registro a mano con */
+/* `writeStore`. Due cose sbagliate in una riga.                        */
+/*                                                                     */
+/* `groups` non è più la verità: da quando uscita e rientro sono        */
+/* operazioni versionate, la verità è `gruppiStato`, e `groups` è una   */
+/* proiezione che `normalizzaRegistro` rigenera da lì. Lasciando        */
+/* `gruppiStato` con il codice ancora a `true`, il gruppo sciolto        */
+/* tornava alla PRIMA LETTURA del registro — bastava riaprire l'app.    */
+/*                                                                     */
+/* E `writeStore` diretto saltava `timbra`, quindi la modifica non aveva */
+/* orologio: nessuna versione con cui vincere su una copia più vecchia.  */
+/* ================================================================== */
+{
+  const T7 = 1_700_000_000_000;
+  const apri = () => normalizzaRegistro(vuoto(), vuoto);
+  const entra = (d, codice, quando) => normalizzaRegistro(timbra(d, {
+    ...d,
+    groups: [...(d.groups || []), codice],
+    gruppiStato: { ...(d.gruppiStato || {}), [codice]: true },
+  }, quando), vuoto);
+
+  /* `salva()`: timbra e restituisce, come fa App.jsx */
+  const salva = (prima, next, quando) => normalizzaRegistro(timbra(prima, next, quando), vuoto);
+
+  /* le righe di `sync` quando trova dei gruppi sciolti, chiamando le
+     funzioni vere invece di ricopiarle */
+  const sciogli = (dati, _codici, morti, quando) => {
+    const { codici: rimasti, daTogliere } = codiciDopoSync(dati.groups || [], morti);
+    return salva(dati, {
+      ...dati,
+      groups: rimasti,
+      gruppiStato: statoDopoSync(dati.gruppiStato, daTogliere),
+    }, quando);
+  };
+
+  const dueGruppi = entra(entra(apri(), 'AAAAAA', T7), 'BBBBBB', T7);
+  eq('sciolto · si parte con due gruppi', dueGruppi.groups.join(','), 'AAAAAA,BBBBBB');
+
+  /* --- 1. il gruppo sciolto sparisce --- */
+  const dopo = sciogli(dueGruppi, ['AAAAAA', 'BBBBBB'], ['AAAAAA'], T7 + 100000);
+  ok('sciolto · sparisce dall\'app', !dopo.groups.includes('AAAAAA'),
+    `gruppi rimasti: ${dopo.groups.join(', ')}`);
+  ok('sciolto · l\'altro resta', dopo.groups.includes('BBBBBB'));
+  eq('sciolto · ed è registrato come uscita, non solo tolto dalla lista',
+    dopo.gruppiStato.AAAAAA, false);
+  ok('sciolto · l\'uscita ha un orologio suo',
+    Number.isFinite(dopo.orologi['gruppiStato.AAAAAA'])
+      && dopo.orologi['gruppiStato.AAAAAA'] === T7 + 100000,
+    `orologio: ${dopo.orologi['gruppiStato.AAAAAA']}`);
+
+  /* --- 2. rileggere il registro non lo fa tornare ---
+     È il caso che il difetto sbagliava per primo: `normalizzaRegistro`
+     rigenera `groups` da `gruppiStato`, quindi bastava riaprire l'app. */
+  ok('sciolto · una rilettura del registro non lo riporta',
+    !normalizzaRegistro(dopo, vuoto).groups.includes('AAAAAA'));
+
+  /* --- 3. una modifica non collegata, poi un salvataggio --- */
+  const conSigaretta = salva(dopo, {
+    ...dopo,
+    eventi: [...dopo.eventi, { id: 'ev-7', tipo: 'cig', ts: T7 + 150000 }],
+  }, T7 + 200000);
+  ok('sciolto · un salvataggio non collegato non lo fa ricomparire',
+    !conSigaretta.groups.includes('AAAAAA'),
+    `gruppi dopo il salvataggio: ${conSigaretta.groups.join(', ')}`);
+  eq('sciolto · e la modifica non collegata è passata', conSigaretta.cigs.length, 1);
+  eq('sciolto · l\'uscita è ancora registrata', conSigaretta.gruppiStato.AAAAAA, false);
+
+  /* --- 4. fusione con una copia più vecchia che ce l'ha ancora --- */
+  const copiaIndietro = dueGruppi;      // il dispositivo rimasto indietro
+  const fuso = fondiRegistri(conSigaretta, copiaIndietro, vuoto);
+  ok('sciolto · una copia rimasta indietro non lo ripristina',
+    !fuso.groups.includes('AAAAAA'),
+    `gruppi dopo la fusione: ${fuso.groups.join(', ')}`);
+  ok('sciolto · e l\'altro gruppo sopravvive', fuso.groups.includes('BBBBBB'));
+  eq('sciolto · nei due versi lo stesso risultato',
+    fondiRegistri(copiaIndietro, conSigaretta, vuoto).groups.join(','), fuso.groups.join(','));
+  ok('sciolto · anche fondendo tre volte in ordini diversi',
+    !fondiRegistri(fondiRegistri(copiaIndietro, fuso, vuoto), dopo, vuoto)
+      .groups.includes('AAAAAA'));
+
+  /* --- 5. dati salvati e stato dell'app coerenti ---
+     `salva` scrive `datiRef` e lo stato dallo STESSO oggetto timbrato:
+     quello che finisce sul dispositivo e quello che l'app mostra devono
+     essere la stessa cosa, altrimenti la lista a schermo e la lista
+     salvata possono divergere. */
+  const rilettoDalDisco = normalizzaRegistro(JSON.parse(JSON.stringify(conSigaretta)), vuoto);
+  eq('sciolto · quello che si rilegge dal dispositivo è quello che l\'app mostra',
+    rilettoDalDisco.groups.join(','), conSigaretta.groups.join(','));
+  eq('sciolto · e lo stato dei gruppi coincide',
+    JSON.stringify(rilettoDalDisco.gruppiStato), JSON.stringify(conSigaretta.gruppiStato));
+
+  /* --- 6. l'incerto non si tocca ---
+     `smista` distingue «non c'è più» da «non lo so», e solo il primo
+     autorizza a togliere. Sul secondo non deve succedere niente. */
+  const conIncerto = sciogli(dueGruppi, ['AAAAAA', 'BBBBBB'], [], T7 + 300000);
+  eq('sciolto · con nessun gruppo morto la lista non cambia',
+    conIncerto.groups.join(','), 'AAAAAA,BBBBBB');
+  eq('sciolto · e nessuna uscita viene registrata',
+    Object.values(conIncerto.gruppiStato).filter((v) => v === false).length, 0);
+
+  /* --- 7. e si può sempre rientrare, se il gruppo viene ricreato --- */
+  const rientrato = entra(fuso, 'AAAAAA', T7 + 400000);
+  ok('sciolto · se il gruppo torna a esistere ci si può rientrare',
+    rientrato.groups.includes('AAAAAA'));
+  ok('sciolto · e il rientro vince sulla copia rimasta indietro',
+    fondiRegistri(rientrato, copiaIndietro, vuoto).groups.includes('AAAAAA'));
+
+  /* --- 8. il sorgente resta agganciato --- */
+  {
+    const app = readFileSync(resolve(process.cwd(), 'src/App.jsx'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+    const i = app.indexOf('daTogliere.length');
+    const corpo = app.slice(i, i + 700);
+    ok('sciolto · sync registra le uscite in gruppiStato',
+      /gruppiStato:\s*statoDopoSync\(/.test(corpo),
+      'sync toglie ancora il gruppo dalla sola lista');
+    ok('sciolto · e passa da salva, non da writeStore',
+      /salva\(/.test(corpo) && !/writeStore\(/.test(corpo),
+      'sync scrive ancora il registro a mano');
+  }
+}
+
+/* ================================================================== */
+/* 8. UN GRUPPO ENTRATO MENTRE LA SINCRONIZZAZIONE ASPETTA LA RETE     */
+/*                                                                     */
+/* `sync()` cattura la lista all'avvio, poi fa una richiesta di rete    */
+/* per ogni gruppo. Se l'utente entra in un gruppo nuovo mentre quelle  */
+/* richieste sono in volo, l'esito arrivava e ricostruiva tutto dalla   */
+/* lista VECCHIA: il gruppo appena aggiunto spariva dalla lista         */
+/* salvata, dalla schermata, dalle classifiche in memoria e dal gruppo  */
+/* aperto. Quattro posti, un solo errore.                               */
+/*                                                                     */
+/* Qui la sincronizzazione è davvero differita: la rete risponde con un */
+/* ritardo comandato dal test, e l'ingresso nel gruppo nuovo avviene in */
+/* mezzo. Le funzioni chiamate sono quelle vere di `gruppiSync.js`.     */
+/* ================================================================== */
+{
+  const T8 = 1_800_000_000_000;
+  const attesa8 = (ms) => new Promise((r) => { setTimeout(r, ms); });
+
+  /* un'app finta ridotta all'osso: registro, schede a schermo,
+     classifiche in memoria, gruppo aperto */
+  const creaApp8 = () => {
+    const app = {
+      dati: normalizzaRegistro(vuoto(), vuoto),
+      gruppi: [],
+      membri: {},
+      attivo: null,
+    };
+    app.salva = (next, quando) => {
+      app.dati = normalizzaRegistro(timbra(app.dati, next, quando), vuoto);
+      return app.dati;
+    };
+    // handleConfermaJoin, ridotto a quello che tocca
+    app.entra = (codice, quando) => {
+      app.salva({
+        ...app.dati,
+        groups: [...(app.dati.groups || []), codice],
+        gruppiStato: { ...(app.dati.gruppiStato || {}), [codice]: true },
+      }, quando);
+      app.gruppi = [...app.gruppi.filter((g) => g.code !== codice), { code: codice, name: `gruppo ${codice}` }];
+      app.membri[codice] = [`membro-di-${codice}`];
+      app.attivo = codice;
+    };
+    /* sync(): cattura la lista, aspetta la rete, poi applica l'esito
+       esattamente come fa App.jsx */
+    app.sync = async (rete) => {
+      const codici = app.dati.groups || [];
+      const esiti = {};
+      const membriLetti = {};
+      for (const code of codici) {
+        esiti[code] = await rete(code);
+        if (esiti[code].vivo) membriLetti[code] = [`membro-di-${code}`];
+      }
+      const morti = codici.filter((c) => esiti[c].morto);
+      const incerti = codici.filter((c) => esiti[c].incerto);
+      const vivi = codici.filter((c) => esiti[c].vivo);
+
+      const attuale = app.dati;
+      const listaAdesso = attuale?.groups || codici;
+      const { codici: rimasti, daTogliere } = codiciDopoSync(listaAdesso, morti);
+
+      const nuoviGruppi = vivi.map((c) => ({ code: c, name: `gruppo ${c}` }));
+      app.gruppi = gruppiDopoSync(app.gruppi, nuoviGruppi, rimasti);
+      app.membri = membriDopoSync(app.membri, membriLetti, rimasti);
+
+      if (daTogliere.length && attuale) {
+        app.salva({
+          ...attuale,
+          groups: rimasti,
+          gruppiStato: statoDopoSync(attuale.gruppiStato, daTogliere),
+        }, T8 + 500000);
+      }
+      app.attivo = attivoDopoSync(app.attivo, rimasti);
+      return { rimasti, daTogliere, incerti };
+    };
+    return app;
+  };
+
+  /* --- IL CASO DELLA SEGNALAZIONE ---
+     AAAAAA e BBBBBB; sync lento; si entra in CCCCCC; AAAAAA è sciolto. */
+  {
+    const app = creaApp8();
+    app.entra('AAAAAA', T8);
+    app.entra('BBBBBB', T8 + 1000);
+    app.attivo = 'AAAAAA';
+    eq('gara · si parte con due gruppi', app.dati.groups.join(','), 'AAAAAA,BBBBBB');
+
+    const rete = async (code) => {
+      await attesa8(30);                    // la rete è lenta
+      return code === 'AAAAAA' ? { morto: true } : { vivo: true };
+    };
+    const inCorso = app.sync(rete);
+
+    // mentre la rete pensa, l'utente entra in CCCCCC
+    await attesa8(10);
+    app.entra('CCCCCC', T8 + 200000);
+    eq('gara · CCCCCC è entrato durante la sincronizzazione',
+      app.dati.groups.join(','), 'AAAAAA,BBBBBB,CCCCCC');
+
+    await inCorso;
+
+    /* 1 · risultato finale */
+    eq('gara · la lista finale è BBBBBB, CCCCCC', app.dati.groups.join(','), 'BBBBBB,CCCCCC');
+    ok('gara · CCCCCC NON è sparito dalla lista', app.dati.groups.includes('CCCCCC'),
+      `lista finale: ${app.dati.groups.join(', ')}`);
+
+    /* 2 · AAAAAA segnato false con un orologio nuovo */
+    eq('gara · AAAAAA è segnato come uscito', app.dati.gruppiStato.AAAAAA, false);
+    eq('gara · con un orologio nuovo e valido',
+      app.dati.orologi['gruppiStato.AAAAAA'], T8 + 500000);
+
+    /* 3 · CCCCCC resta true, con il SUO orologio */
+    eq('gara · CCCCCC resta dentro', app.dati.gruppiStato.CCCCCC, true);
+    eq('gara · e tiene il suo orologio, non quello della sincronizzazione',
+      app.dati.orologi['gruppiStato.CCCCCC'], T8 + 200000);
+
+    /* 3b · e non lo perde una rilettura o una fusione con una copia vecchia */
+    ok('gara · una rilettura non lo perde',
+      normalizzaRegistro(app.dati, vuoto).groups.includes('CCCCCC'));
+    const copiaPrima = normalizzaRegistro({
+      ...vuoto(), groups: ['AAAAAA', 'BBBBBB'],
+      gruppiStato: { AAAAAA: true, BBBBBB: true },
+      orologi: { 'gruppiStato.AAAAAA': T8, 'gruppiStato.BBBBBB': T8 + 1000 },
+    }, vuoto);
+    const fuso8 = fondiRegistri(app.dati, copiaPrima, vuoto);
+    ok('gara · una fusione con una copia indietro non lo perde',
+      fuso8.groups.includes('CCCCCC'), `dopo la fusione: ${fuso8.groups.join(', ')}`);
+    ok('gara · e non riporta AAAAAA', !fuso8.groups.includes('AAAAAA'));
+    eq('gara · nei due versi lo stesso risultato',
+      fondiRegistri(copiaPrima, app.dati, vuoto).groups.join(','), fuso8.groups.join(','));
+
+    /* 4 · schermata e classifiche */
+    ok('gara · CCCCCC è ancora nella schermata gruppi',
+      app.gruppi.some((g) => g.code === 'CCCCCC'),
+      `schede a schermo: ${app.gruppi.map((g) => g.code).join(', ')}`);
+    ok('gara · e AAAAAA non c\'è più', !app.gruppi.some((g) => g.code === 'AAAAAA'));
+    ok('gara · le classifiche di CCCCCC non sono state cancellate',
+      Array.isArray(app.membri.CCCCCC), `membri in memoria: ${Object.keys(app.membri).join(', ')}`);
+    ok('gara · quelle di BBBBBB sono state aggiornate', Array.isArray(app.membri.BBBBBB));
+    ok('gara · e quelle di AAAAAA sono sparite', !app.membri.AAAAAA);
+  }
+
+  /* --- 5 · se CCCCCC è il gruppo aperto, resta aperto --- */
+  {
+    const app = creaApp8();
+    app.entra('AAAAAA', T8);
+    app.entra('BBBBBB', T8 + 1000);
+    const inCorso = app.sync(async (code) => {
+      await attesa8(30);
+      return code === 'AAAAAA' ? { morto: true } : { vivo: true };
+    });
+    await attesa8(10);
+    app.entra('CCCCCC', T8 + 200000);        // `entra` lo apre, come fa l'app
+    eq('gara · CCCCCC è il gruppo aperto', app.attivo, 'CCCCCC');
+    await inCorso;
+    eq('gara · e resta aperto dopo la sincronizzazione', app.attivo, 'CCCCCC');
+  }
+
+  /* --- 6 · la stessa gara senza nessun gruppo morto --- */
+  {
+    const app = creaApp8();
+    app.entra('AAAAAA', T8);
+    app.entra('BBBBBB', T8 + 1000);
+    const inCorso = app.sync(async () => { await attesa8(30); return { vivo: true }; });
+    await attesa8(10);
+    app.entra('CCCCCC', T8 + 200000);
+    const esito = await inCorso;
+
+    eq('gara · senza morti la lista non perde niente',
+      app.dati.groups.join(','), 'AAAAAA,BBBBBB,CCCCCC');
+    eq('gara · e non si registra nessuna uscita', esito.daTogliere.length, 0);
+    ok('gara · CCCCCC è ancora a schermo', app.gruppi.some((g) => g.code === 'CCCCCC'));
+    ok('gara · con le sue classifiche', Array.isArray(app.membri.CCCCCC));
+    eq('gara · e resta il gruppo aperto', app.attivo, 'CCCCCC');
+  }
+
+  /* --- 7 · l'incerto non si tocca, nemmeno durante una gara --- */
+  {
+    const app = creaApp8();
+    app.entra('AAAAAA', T8);
+    app.entra('BBBBBB', T8 + 1000);
+    const inCorso = app.sync(async (code) => {
+      await attesa8(30);
+      if (code === 'AAAAAA') return { incerto: true };
+      return { vivo: true };
+    });
+    await attesa8(10);
+    app.entra('CCCCCC', T8 + 200000);
+    await inCorso;
+
+    ok('gara · un gruppo incerto resta nella lista', app.dati.groups.includes('AAAAAA'));
+    ok('gara · e non viene segnato come uscito', app.dati.gruppiStato.AAAAAA !== false);
+    ok('gara · la sua scheda resta a schermo', app.gruppi.some((g) => g.code === 'AAAAAA'));
+    ok('gara · e CCCCCC c\'è comunque', app.dati.groups.includes('CCCCCC'));
+  }
+
+  /* --- 8 · un morto da cui l'utente è già uscito per conto suo non
+             viene tolto due volte né segnato di nuovo --- */
+  {
+    const app = creaApp8();
+    app.entra('AAAAAA', T8);
+    app.entra('BBBBBB', T8 + 1000);
+    const { codici, daTogliere } = codiciDopoSync(['BBBBBB'], ['AAAAAA']);
+    eq('gara · un morto non più in lista non si toglie', daTogliere.length, 0);
+    eq('gara · e la lista resta com\'è', codici.join(','), 'BBBBBB');
   }
 }
 

@@ -16,6 +16,9 @@ import auth from './auth';
 import { eliminaAccount } from './utils/account';
 import { creaSequenza, caricaSessione } from './utils/sessione';
 import {
+  codiciDopoSync, gruppiDopoSync, membriDopoSync, attivoDopoSync, statoDopoSync,
+} from './utils/gruppiSync';
+import {
   distribuisci, tappeDaRiavviare, togliLotto, costruisciLotto,
 } from './utils/arretrate';
 import {
@@ -471,42 +474,62 @@ export default function App() {
       if (m.ok) membriLetti[code] = m.membri;
     }
     const { vivi, morti, incerti } = smista(codici, esiti);
-    const senzaMembri = vivi.filter((c) => !(c in membriLetti));
-    const daTenere = [...incerti, ...senzaMembri];
+    /* `senzaMembri` e `daTenere` non servono più: dicevano quali codici
+       tenere da prima perché la loro classifica non era stata riletta, e
+       adesso è `membriDopoSync` a farlo per tutti — compresi i gruppi
+       entrati durante la sincronizzazione, che quel calcolo non poteva
+       nemmeno vedere. */
+
+    /* ------------------------------------------------------------------
+       DA QUI IN GIÙ SI PARTE DALLO STATO DI ADESSO, NON DA `codici`.
+
+       `codici` è la lista com'era quando questa sincronizzazione è
+       partita, e da allora sono passate diverse richieste di rete. Se
+       l'utente è entrato in un gruppo nel frattempo, ricostruire tutto da
+       `codici` lo cancellava: dalla lista salvata, dalla schermata, dalle
+       classifiche in memoria e dal gruppo aperto. Quattro posti, un solo
+       errore — prendere per buono lo stato di prima.
+
+       La regola sta in `utils/gruppiSync.js`, ed è una sola: questa
+       sincronizzazione può togliere solo quello che ha verificato, e non
+       decide niente su quello che non ha nemmeno guardato.
+       ------------------------------------------------------------------ */
+    const attuale = datiRef.current;
+    const listaAdesso = attuale?.groups || codici;
+    const { codici: rimasti, daTogliere } = codiciDopoSync(listaAdesso, morti);
 
     const nuoviGruppi = vivi.map((c) => esiti[c].gruppo);
-    setGruppi((prev) => (incerti.length
-      ? codici
-        .map((c) => nuoviGruppi.find((g) => g.code === c)
-          || (incerti.includes(c) ? prev.find((g) => g.code === c) : null))
-        .filter(Boolean)
-      : nuoviGruppi));
-    setMembriPerGruppo((prev) => {
-      if (!daTenere.length) return membriLetti;
-      const tenuti = {};
-      daTenere.forEach((c) => { if (prev[c]) tenuti[c] = prev[c]; });
-      return { ...tenuti, ...membriLetti };
-    });
+    setGruppi((prev) => gruppiDopoSync(prev, nuoviGruppi, rimasti));
+    setMembriPerGruppo((prev) => membriDopoSync(prev, membriLetti, rimasti));
     // se non si è riusciti a leggere proprio niente, «aggiornato adesso»
     // sarebbe una bugia: l'ora dell'ultimo sync non si muove
     if (incerti.length < codici.length) setUltimoSync(Date.now());
 
     const nuoviMembri = membriLetti;
 
-    if (morti.length && datiRef.current) {
-      /* `codici` meno i morti, e NON `vivi`: fra i due c'è di mezzo
-         l'incerto, che deve restare nella lista proprio perché non
-         sappiamo cosa sia. Togliere anche quello vorrebbe dire far
-         rientrare dalla finestra il difetto appena chiuso. */
-      const restano = codici.filter((c) => !morti.includes(c));
-      // datiRef e non l'updater funzionale di setDati: dentro l'updater non
-      // vanno messi effetti collaterali (in StrictMode React lo esegue due
-      // volte, e la scrittura partirebbe doppia).
-      const next = { ...datiRef.current, groups: restano };
-      setDati(next);
-      writeStore(logKey(user.id), next);
-      setGruppoAttivo((prev) => (restano.includes(prev) ? prev : restano[0] || null));
+    if (daTogliere.length && attuale) {
+      /* UN GRUPPO SCIOLTO È UN'USCITA, e va scritta dove si scrivono le
+         uscite. `groups` non è la verità: da quando uscita e rientro sono
+         operazioni versionate, la verità è `gruppiStato`, e `groups` è
+         una proiezione che `normalizzaRegistro` rigenera. Lasciando
+         `gruppiStato` a `true`, il gruppo sciolto tornava alla prima
+         rilettura del registro.
+
+         Si passa da `salva`, cioè dallo stesso percorso di join e leave:
+         timbra, aggiorna `datiRef`, aggiorna lo stato, scrive sul
+         dispositivo e pubblica. Niente `writeStore` a mano, che saltava
+         `timbra` e lasciava la modifica senza orologio.
+
+         Solo `daTogliere`, mai gli `incerti`: sul «non lo so» non si tocca
+         niente. E mai un gruppo entrato nel frattempo, che questa
+         sincronizzazione non ha interrogato. */
+      salva({
+        ...attuale,
+        groups: rimasti,
+        gruppiStato: statoDopoSync(attuale.gruppiStato, daTogliere),
+      });
     }
+    setGruppoAttivo((prev) => attivoDopoSync(prev, rimasti));
 
     if (silenzioso) return;
 

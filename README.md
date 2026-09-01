@@ -19,7 +19,7 @@ npm run build             # produce dist/
 npm run preview           # serve dist/ come in produzione
 npm run lint              # 0 errori, 0 avvisi
 npm run verifica          # calcoli + persistenza + interfaccia: 1461 controlli
-npm run verifica:completa # tutto quanto: 1772 controlli
+npm run verifica:completa # tutto quanto: 1850 controlli
 ```
 
 ### `npm run verifica:completa`
@@ -32,14 +32,14 @@ prima che fallisce:
 |---|---|---|
 | `controlli.mjs` | i calcoli | 311 |
 | `persistenza.mjs` | che i dati non spariscano | 133 |
-| `redesign.mjs` | markup, CSS, accessibilità | 1022 |
+| `redesign.mjs` | markup, CSS, accessibilità | 1035 |
 | `gruppi.mjs` | rete incerta e classifica | 25 |
 | `coda-utente.mjs` | code attribuite all'utente, scritture offline | 49 |
 | `annulla-lotto.mjs` | annullamento delle registrazioni arretrate | 41 |
 | `account.mjs` | eliminazione dell'account | 22 |
-| `affidabilita.mjs` | gare di sessione, uscita e rientro nei gruppi, gare fra programmazione e annullamento notifiche, letture altrui, pareggi | 139 |
-| `schermate.jsx` | ogni schermata renderizzata davvero | 30 stati |
-| | **totale** | **1772** |
+| `affidabilita.mjs` | gare di sessione, uscita e rientro nei gruppi, gare fra programmazione e annullamento notifiche, letture altrui, pareggi, gruppi sciolti, gare della sincronizzazione | 190 |
+| `schermate.jsx` | ogni schermata renderizzata davvero | 44 stati |
+| | **totale** | **1850** |
 
 `npm run verifica` resta quello di sempre — calcoli, persistenza, interfaccia —
 e continua a girare con Node puro senza installare niente. Le altre suite hanno
@@ -84,7 +84,7 @@ revisione partiva, `cancella` no, quindi una cancellazione con una revisione
 vecchia poteva portarsi via il lavoro di un altro dispositivo. Con il DELETE
 secco di prima ne fallivano **7**. Vedi `PERSISTENZA.md`.
 
-`verifica/redesign.mjs` (1022) controlla l'**interfaccia**: tag JSX e parentesi
+`verifica/redesign.mjs` (1035) controlla l'**interfaccia**: tag JSX e parentesi
 bilanciate, componenti importati davvero, import mai usati, costanti usate prima
 di essere dichiarate, ogni classe scritta nel markup esistente in `styles.css`
 (e viceversa), contrasto WCAG AA di ogni coppia testo/fondo, bersagli tattili da

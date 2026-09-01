@@ -34,7 +34,7 @@ import {
   calcolaConti, intervalliCoperti, riferimentoAstinenza, giorniSenzaFumare,
   recordSenzaFumare, giorniPercorso as gp,
 } from '../src/utils/conti.js';
-import { sod, ymd, addGiorni } from '../src/utils/format.js';
+import { sod, ymd, addGiorni, dec, eur } from '../src/utils/format.js';
 import { PALETTE, TAPPE, DAY } from '../src/constants.js';
 
 /* deve restare allineato a vuotoLog() in App.jsx */
@@ -354,6 +354,58 @@ if (html) {
     `manca ${orario(lotto.ts[lotto.ts.length - 1])}`);
   ok('lotto · nessun buco al posto degli orari', !/dalle\s+alle/.test(testo), testo.slice(0, 200));
   ok('lotto · e si può ancora annullare', testo.includes('Annulla'));
+}
+
+/* ---------- le due cifre della Home devono raccontare la stessa cosa ----------
+   La cifra delle sigarette era arrotondata all'intero e quella dei soldi no:
+   19,94 sigarette diventavano «20», ma il costo accanto restava 6,78 €. Chi
+   moltiplicava venti sigarette per il prezzo che conosce otteneva un numero
+   che non tornava, e il primo sospetto cadeva sui soldi — cioè sulla cifra
+   giusta. Qui si guarda cosa finisce DAVVERO a schermo, non come è scritto
+   il sorgente. */
+{
+  const testoDi = (h) => (h || '').replace(/<[^>]*>/g, ' ')
+    .replace(/&#x27;|&#39;/g, "'").replace(/&nbsp;|\u00a0/g, ' ').replace(/\s+/g, ' ');
+
+  Object.entries(casi).forEach(([nome, [Componente, props]]) => {
+    if (Componente !== OggiScreen) return;
+    const conti = props.conti;
+    if (!conti || conti.scartoMostrato === undefined) return;
+    const testo = testoDi(reso[nome]);
+
+    ok(`cifre · «${nome}» mostra lo scarto con una cifra decimale`,
+      testo.includes(dec(conti.scartoMostrato)),
+      `manca ${dec(conti.scartoMostrato)} in: ${testo.slice(0, 240)}`);
+
+    /* e le due cifre devono essere coerenti fra loro: lo scarto mostrato
+       per il prezzo unitario deve dare il costo mostrato, a meno
+       dell'arrotondamento a un decimale delle sigarette */
+    const soldi = conti.inRosso ? conti.spesoInPiu : conti.risparmiato;
+    ok(`cifre · «${nome}» mostra anche i soldi`, testo.includes(eur(soldi)),
+      `manca ${eur(soldi)} in: ${testo.slice(0, 240)}`);
+    const atteso = conti.scartoMostrato * conti.unitario;
+    ok(`cifre · «${nome}» le due cifre tornano fra loro`,
+      Math.abs(atteso - Math.abs(soldi)) <= conti.unitario * 0.05 + 0.005,
+      `${conti.scartoMostrato} x ${conti.unitario} = ${atteso.toFixed(2)}, a schermo ${eur(soldi)}`);
+
+    /* l'intero non deve più comparire da solo al posto dello scarto */
+    if (conti.scartoIntero !== conti.scartoMostrato) {
+      ok(`cifre · «${nome}» non mostra la versione intera`,
+        !new RegExp(`(^|[^0-9,])${conti.scartoIntero}([^0-9,]|$)`).test(testo)
+          || testo.includes(dec(conti.scartoMostrato)),
+        `l'intero ${conti.scartoIntero} compare al posto di ${dec(conti.scartoMostrato)}`);
+    }
+
+    /* l'etichetta del costo fa coppia con quella delle sigarette */
+    if (conti.inRosso && !conti.inPari) {
+      ok(`cifre · «${nome}» l'etichetta del costo è «costo oltre il tuo ritmo»`,
+        testo.includes('costo oltre il tuo ritmo'), testo.slice(0, 240));
+      ok(`cifre · «${nome}» e non dice più «spesi in più»`,
+        !/[^é] spesi in più/.test(testo), testo.slice(0, 240));
+      ok(`cifre · «${nome}» accanto a «sigarette sopra il tuo ritmo»`,
+        testo.includes('sigarette sopra il tuo ritmo'), testo.slice(0, 240));
+    }
+  });
 }
 
 console.log('');

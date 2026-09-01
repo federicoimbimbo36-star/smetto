@@ -1,6 +1,6 @@
 import { Check, X, Plus, Sparkles, Undo2, ListPlus } from 'lucide-react';
 import { DAY, TRIGGER, FRASI, ORE_TOLLERANZA } from '../constants';
-import { eur, eur0, durata, ora } from '../utils/format';
+import { eur, eur0, dec, durata, ora } from '../utils/format';
 import { Pianta, FaseStop, Motto } from '../components';
 
 const ORA = 3600000;
@@ -58,13 +58,21 @@ export default function OggiScreen({
   const inStop = senza !== null && senza >= 12 * ORA;
   const frase = FRASI[giorniPercorso % FRASI.length];
 
-  /* Arrotondato UNA VOLTA SOLA, e non qui: `scartoIntero` arriva già fatto
-     dai conti. Riarrotondando quello a un decimale, 86,46 diventava 86,5 e
-     poi 87, mentre il valore vero è 86: la Home e il Percorso mostravano
-     due cifre diverse per la stessa quantità. Il valore con un decimale sta
-     nel Percorso, dove c'è lo spazio per dichiarare anche il prezzo
-     unitario. */
-  const evitate = conti ? conti.scartoIntero : null;
+  /* UNA CIFRA DECIMALE, come il costo che le sta accanto.
+
+     Qui c'era `scartoIntero`, e le due cifre della Home raccontavano due
+     cose diverse: 19,94 sigarette diventavano «20», ma il costo accanto
+     restava quello vero, 6,78 €. Chi faceva il conto a mano — venti
+     sigarette per il prezzo che conosce — otteneva un numero che non
+     tornava, e il primo sospetto cadeva sui soldi, cioè sulla cifra
+     giusta.
+
+     `scartoMostrato` è lo stesso valore che usa il Percorso, arrotondato
+     una volta sola dentro `conti.js`: adesso le due schermate dicono lo
+     stesso numero. I calcoli non cambiano — `scartoRitmo`,
+     `risparmiato` e `spesoInPiu` restano quelli di prima — cambia solo
+     quale dei due valori già pronti finisce a schermo. */
+  const evitate = conti ? dec(conti.scartoMostrato) : null;
 
   return (
     <div className="screen">
@@ -123,14 +131,20 @@ export default function OggiScreen({
           </span>
           {/* Mai un meno davanti alla parola «risparmiati»: sono due numeri
               diversi, e sono tutti e due positivi. Chi sta sopra il proprio
-              ritmo legge «12,40 € spesi in più», non «−12,40 € risparmiati». */}
+              ritmo legge «12,40 € costo oltre il tuo ritmo», non
+              «−12,40 € risparmiati».
+
+              «costo oltre il tuo ritmo» invece di «spesi in più» perché
+              fa coppia con l'etichetta della cifra accanto, «sigarette
+              sopra il tuo ritmo»: sono due misure della stessa cosa, e
+              adesso lo dicono anche a parole. */}
           <span className="oggi-cifra">
             <span className="oggi-cifra-val num">
               {eur(conti.inRosso ? conti.spesoInPiu : conti.risparmiato)}
             </span>
             <span className="oggi-cifra-lab">
               {conti.inPari ? 'né risparmiati né spesi in più'
-                : conti.inRosso ? 'spesi in più' : 'risparmiati'}
+                : conti.inRosso ? 'costo oltre il tuo ritmo' : 'risparmiati'}
             </span>
           </span>
         </button>
