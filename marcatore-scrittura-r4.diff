@@ -1,0 +1,178 @@
+Smetto — marcatore di logout, correzione della scrittura silenziosa
+Differenze rispetto a smetto-cancellazione-locale-r3.zip
+
+Un difetto solo:
+  src/utils/marcatoreLogout.js — scriviMarcatore() usava
+  `deposito(ambiente)?.setItem(…)`. Con un ambiente privo di
+  localStorage (o con localStorage: null) l'optional chaining salta la
+  chiamata senza lanciare, e la funzione arrivava lo stesso a
+  `return marcatore`: dichiarava scritto un marcatore che non era stato
+  scritto, contraddicendo il proprio contratto e ispezionaMarcatore(),
+  che sullo stesso ambiente risponde `assente`.
+
+Non toccati: src/utils/logout.js (eseguiLogout chiama `marca?.()` e non
+ne guarda l'esito, di proposito), puliziaLocale.js, verifica/account.mjs
+e tutti i controlli aggiunti nella revisione 3.
+
+Escluso verifica/.schermate.cjs, node_modules e dist.
+
+--- confronto/dopo/src/utils/marcatoreLogout.js	2026-09-02 14:23:29.582224616 +0000
++++ repo/smetto/src/utils/marcatoreLogout.js	2026-09-02 14:34:37.852778657 +0000
+@@ -74,9 +74,42 @@
+ };
+ 
+ /* Scrive «l'utente X è uscito da qui». Restituisce il marcatore scritto,
+-   o `null` se non si è potuto scrivere — chi chiama può dirlo. */
++   o `null` se non si è potuto scrivere — chi chiama può dirlo.
++
++   IL DEPOSITO SI CONTROLLA PRIMA, e non si passa da `?.`. Il difetto
++   corretto qui stava tutto in una riga:
++
++     deposito(ambiente)?.setItem(CHIAVE_MARCATORE, …);
++
++   Con `ambiente` privo di `localStorage` — o con `localStorage: null` —
++   `deposito` risponde `null`, l'optional chaining salta la chiamata
++   SENZA lanciare, e la funzione arrivava lo stesso a `return marcatore`:
++   annunciava un marcatore scritto dove non era stato scritto niente.
++   `ispezionaMarcatore` sullo stesso ambiente rispondeva `assente`, ed
++   erano le due metà della stessa bugia. Un `?.` è il modo giusto di
++   dire «se non c'è, lascia perdere» e il modo sbagliato di dire «se non
++   c'è, dillo»: qui serviva il secondo.
++
++   Il valore di ritorno non cambia niente nel flusso di uscita —
++   `eseguiLogout` chiama `marca?.()` e non ne guarda l'esito, di
++   proposito, perché il canale e l'annuncio restano anche senza
++   marcatore — ma è quello che dice a chi guarda se il logout è stato
++   scritto o solo tentato, ed è il fatto su cui si regge il logout fra
++   schede su iOS. Un contratto che mente su questo non serve a niente.
++
++   L'ambiente davvero senza `localStorage` resta `assente` per
++   `ispezionaMarcatore`, e va bene così: lì il marcatore non può essere
++   esistito, quindi non c'è nessun residuo da annunciare. Quello che non
++   deve più succedere è che la scrittura affermi il contrario. */
+ export function scriviMarcatore(userId, { ambiente = globalThis } = {}) {
+   if (!userId) return null;
++
++  /* Stesso accesso di `rimuoviMarcatore`, per non avere due criteri: il
++     `try` dentro `deposito` copre il caso in cui leggere la proprietà
++     stessa lancia — succede quando i cookie sono bloccati. */
++  const dove = deposito(ambiente);
++  if (!dove || typeof dove.setItem !== 'function') return null;
++
+   const marcatore = {
+     tipo: 'logout',
+     userId,
+@@ -84,7 +117,7 @@
+     id: nuovoId(),
+   };
+   try {
+-    deposito(ambiente)?.setItem(CHIAVE_MARCATORE, JSON.stringify(marcatore));
++    dove.setItem(CHIAVE_MARCATORE, JSON.stringify(marcatore));
+   } catch {
+     return null;                       // storage pieno o negato
+   }
+--- confronto/dopo/verifica/affidabilita.mjs	2026-09-02 14:23:29.587150746 +0000
++++ repo/smetto/verifica/affidabilita.mjs	2026-09-02 14:35:38.362655167 +0000
+@@ -23,7 +23,7 @@
+ import { eseguiLogout, creaUscitaAnnunciata } from '../src/utils/logout.js';
+ import {
+   scriviMarcatore, leggiMarcatore, rimuoviMarcatore, marcatoreRiguarda, sessioneAmmessa,
+-  CHIAVE_MARCATORE,
++  ispezionaMarcatore, CHIAVE_MARCATORE,
+ } from '../src/utils/marcatoreLogout.js';
+ import { GoTrueClient } from '@supabase/auth-js';
+ 
+@@ -2608,6 +2608,93 @@
+       sessioneAmmessa(sess, { ambiente: negato }), sess);
+   }
+ 
++  /* --- 7-bis. SENZA DEPOSITO NON SI È SCRITTO NIENTE, E SI DICE ---
++     Il difetto era `deposito(ambiente)?.setItem(…)`: con un ambiente
++     privo di `localStorage` l'optional chaining salta la chiamata senza
++     lanciare, e la funzione arrivava lo stesso a `return marcatore`.
++     Annunciava una scrittura mai avvenuta — mentre `ispezionaMarcatore`
++     sullo stesso ambiente rispondeva `assente`, che è la stessa bugia
++     vista dall'altro lato. Il marcatore è il fatto su cui si regge il
++     logout fra schede su iOS: se la sua scrittura mente, non c'è modo
++     di sapere se quel logout è stato scritto o solo tentato. */
++  {
++    const senzaDeposito = {
++      'ambiente vuoto': {},
++      'localStorage null': { localStorage: null },
++      'localStorage undefined': { localStorage: undefined },
++      'setItem mancante': { localStorage: { getItem: () => null, removeItem: () => {} } },
++      'setItem non è una funzione': { localStorage: { setItem: 'no' } },
++      'setItem che lancia': { localStorage: { setItem() { throw new Error('quota'); } } },
++      'localStorage che lancia in lettura': {
++        get localStorage() { throw new Error('cookie bloccati'); },
++      },
++    };
++
++    for (const [nome, ambiente] of Object.entries(senzaDeposito)) {
++      let esito;
++      let esploso = false;
++      try { esito = scriviMarcatore(utenteA, { ambiente }); } catch { esploso = true; }
++
++      ok(`marcatore senza deposito (${nome}) · nessuna eccezione esce`, !esploso);
++      eq(`marcatore senza deposito (${nome}) · la scrittura dichiara di non essere avvenuta`,
++        esito, null);
++      /* e le due funzioni non si contraddicono: né la scrittura afferma
++         un marcatore che la lettura non trova, né viceversa */
++      ok(`marcatore senza deposito (${nome}) · e la lettura è d'accordo`,
++        ispezionaMarcatore({ ambiente }).stato !== 'letto');
++      eq(`marcatore senza deposito (${nome}) · niente da leggere`,
++        leggiMarcatore({ ambiente }), null);
++    }
++  }
++
++  /* --- 7-ter. CON UN DEPOSITO CHE FUNZIONA NON CAMBIA NIENTE --- */
++  {
++    const m = new Map();
++    const ambiente = {
++      localStorage: {
++        getItem: (k) => (m.has(k) ? m.get(k) : null),
++        setItem: (k, v) => { m.set(k, String(v)); },
++        removeItem: (k) => { m.delete(k); },
++      },
++    };
++
++    const scritto = scriviMarcatore(utenteA, { ambiente });
++    ok('marcatore scritto · la funzione restituisce il marcatore',
++      Boolean(scritto) && scritto.userId === utenteA && scritto.tipo === 'logout');
++    ok('marcatore scritto · e nel deposito c\'è il JSON di quel marcatore',
++      m.get(CHIAVE_MARCATORE) === JSON.stringify(scritto));
++
++    const visto = ispezionaMarcatore({ ambiente });
++    eq('marcatore scritto · la lettura stretta lo trova', visto.stato, 'letto');
++    eq('marcatore scritto · ed è lo stesso', visto.marcatore?.id, scritto.id);
++    eq('marcatore scritto · anche per la lettura dell\'accesso',
++      leggiMarcatore({ ambiente })?.id, scritto.id);
++
++    // senza utente non si scrive niente: era già così, e resta così
++    eq('marcatore · senza utente non si scrive', scriviMarcatore(null, { ambiente }), null);
++    eq('marcatore · e il deposito non è stato toccato',
++      m.get(CHIAVE_MARCATORE), JSON.stringify(scritto));
++  }
++
++  /* --- 7-quater. L'USCITA NON SI FERMA SE IL MARCATORE NON SI SCRIVE ---
++     Il valore di ritorno adesso è onesto, ma `eseguiLogout` continua a
++     non guardarlo di proposito: senza deposito restano il canale e
++     l'annuncio, e fermare l'uscita perché non c'è dove scrivere sarebbe
++     tenere dentro una persona che ha premuto «esci». */
++  {
++    const passi = [];
++    const esito = await eseguiLogout({
++      signOut: async () => ({}),
++      marca: () => { passi.push('marca'); return scriviMarcatore(utenteA, { ambiente: {} }); },
++      reset: () => passi.push('reset'),
++      annuncia: () => passi.push('annuncia'),
++      riuscito: () => passi.push('riuscito'),
++    });
++    eq('uscita senza deposito · si esce lo stesso', esito, 'uscito');
++    eq('uscita senza deposito · e la sequenza è quella di sempre',
++      passi.join(' → '), 'marca → reset → annuncia → riuscito');
++  }
++
+   /* --- 8. LA SEQUENZA DI USCITA scrive il marcatore, e solo se è uscita --- */
+   {
+     const passi = [];
