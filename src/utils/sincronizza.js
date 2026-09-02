@@ -30,6 +30,8 @@
 /*     telefoni registrano una sigaretta ciascuno.                      */
 /* ------------------------------------------------------------------ */
 
+import { dimenticaUtenteSulDispositivo } from './puliziaLocale.js';
+
 export const SCADUTA = Symbol('scaduta');
 export const CHIAVE_CODA = '__coda__';
 
@@ -77,6 +79,11 @@ export function creaKvSincronizzato({
   tentativi = 5,
   timer = setTimeout,
   uidDaChiave = () => null,
+  /* Come `uidDaChiave`: il motore non sa cosa sia `localStorage`, e il
+     marcatore di logout non sta nella copia locale. Chi lo installa
+     gliela passa (vedi installStorage.js); senza, non c'è niente da
+     togliere e la pulizia non ne risente. */
+  togliMarcatore = null,
 }) {
   /* Da quale revisione remota parte la prossima scrittura di questa
      chiave. Sta in memoria perché è solo un'ottimizzazione: se è
@@ -320,6 +327,46 @@ export function creaKvSincronizzato({
     }
   }
 
+  /* ---------------------------------------------------------------- */
+  /*  L'ACCOUNT CANCELLATO NON DEVE RESTARE QUI                        */
+  /*                                                                   */
+  /*  Sta nel motore e non fuori perché la coda ha DUE copie: la mappa  */
+  /*  in memoria e la riga sul disco. Pulire solo il disco non serve a  */
+  /*  niente — il primo `salvaCoda` che passa, anche quello di un altro */
+  /*  account che registra una sigaretta, riscrive dalla memoria le     */
+  /*  voci appena tolte. Quindi: prima la memoria, poi il disco.        */
+  /*                                                                   */
+  /*  L'esito di `salvaCoda` non si guarda, e non è una dimenticanza:   */
+  /*  una scrittura può risolvere senza persistere, quindi il suo       */
+  /*  successo non prova niente. A dare il verdetto è la RILETTURA che  */
+  /*  fa `dimenticaUtenteSulDispositivo`, che è l'unica cosa che guarda */
+  /*  come sta il disco adesso invece di come è stato chiesto che       */
+  /*  stesse.                                                          */
+  /*                                                                   */
+  /*  Non consegna e non fonde niente: l'account non esiste più, non    */
+  /*  c'è nessun posto dove consegnare. Le voci degli altri utenti      */
+  /*  restano dove sono, in attesa dei loro proprietari.                */
+  /* ---------------------------------------------------------------- */
+  async function dimenticaUtente(uid) {
+    if (!uid) return { ok: false, rimosse: [], rimaste: [], motivo: 'utente' };
+
+    await caricaCoda();
+    let tolte = 0;
+    for (const [key, voce] of [...inCoda.entries()]) {
+      if ((voce?.uid ?? uidDaChiave(key)) === uid) { inCoda.delete(key); tolte += 1; }
+    }
+    /* Le revisioni note sono solo un'ottimizzazione, ma tenere in
+       memoria a che punto stava la riga di un account cancellato non
+       serve a nessuno. */
+    for (const key of [...revNota.keys()]) if (uidDaChiave(key) === uid) revNota.delete(key);
+
+    if (tolte) await salvaCoda();
+
+    return dimenticaUtenteSulDispositivo({
+      uid, locale, uidDaChiave, chiaveCoda: CHIAVE_CODA, togliMarcatore,
+    });
+  }
+
   return {
     async get(key) {
       const copia = await locale.get(key);
@@ -505,6 +552,11 @@ export function creaKvSincronizzato({
 
     /* Quante scritture non sono ancora arrivate al database. */
     inSospeso: () => inCoda.size,
+
+    /* Toglie da questo dispositivo tutto quello che appartiene a un
+       account: chiavi private e voci di coda. La usa la cancellazione
+       dell'account, dopo che il database ha confermato. */
+    dimenticaUtente,
 
     // usati da installStorage.js per agganciare gli eventi del browser
     svuotaCoda: svuota,

@@ -12,6 +12,9 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { normalizzaRegistro, fondiRegistri, timbra, fondiValore } from '../src/utils/fusione.js';
 import { creaKvSincronizzato } from '../src/utils/sincronizza.js';
+/* la stessa che passa installStorage.js al motore: ricopiarla qui
+   voleva dire poterla far divergere senza accorgersene */
+import { uidDaChiave } from '../src/constants.js';
 import { creaSequenza, caricaSessione } from '../src/utils/sessione.js';
 import {
   codiciDopoSync, gruppiDopoSync, membriDopoSync, attivoDopoSync, statoDopoSync,
@@ -20,7 +23,7 @@ import { creaCanaleAuth, creaGuardiaRisveglio, CHIAVE_CANALE } from '../src/util
 import { eseguiLogout, creaUscitaAnnunciata } from '../src/utils/logout.js';
 import {
   scriviMarcatore, leggiMarcatore, rimuoviMarcatore, marcatoreRiguarda, sessioneAmmessa,
-  CHIAVE_MARCATORE,
+  ispezionaMarcatore, CHIAVE_MARCATORE,
 } from '../src/utils/marcatoreLogout.js';
 import { GoTrueClient } from '@supabase/auth-js';
 
@@ -724,10 +727,6 @@ const T = 1_700_000_000_000;
 /* copia locale e la riscrive.                                          */
 /* ================================================================== */
 {
-  const uidDaChiave = (key) => {
-    const m = /^smetto:(?:log|seen):(.+)$/.exec(String(key));
-    return m ? m[1] : null;
-  };
   const A = 'utente-A';
   const B = 'utente-B';
   const chiaveA = `smetto:log:${A}`;
@@ -2607,6 +2606,93 @@ const T = 1_700_000_000_000;
     const sess = sessioneDi(utenteA);
     eq('marcatore · la sessione passa lo stesso',
       sessioneAmmessa(sess, { ambiente: negato }), sess);
+  }
+
+  /* --- 7-bis. SENZA DEPOSITO NON SI È SCRITTO NIENTE, E SI DICE ---
+     Il difetto era `deposito(ambiente)?.setItem(…)`: con un ambiente
+     privo di `localStorage` l'optional chaining salta la chiamata senza
+     lanciare, e la funzione arrivava lo stesso a `return marcatore`.
+     Annunciava una scrittura mai avvenuta — mentre `ispezionaMarcatore`
+     sullo stesso ambiente rispondeva `assente`, che è la stessa bugia
+     vista dall'altro lato. Il marcatore è il fatto su cui si regge il
+     logout fra schede su iOS: se la sua scrittura mente, non c'è modo
+     di sapere se quel logout è stato scritto o solo tentato. */
+  {
+    const senzaDeposito = {
+      'ambiente vuoto': {},
+      'localStorage null': { localStorage: null },
+      'localStorage undefined': { localStorage: undefined },
+      'setItem mancante': { localStorage: { getItem: () => null, removeItem: () => {} } },
+      'setItem non è una funzione': { localStorage: { setItem: 'no' } },
+      'setItem che lancia': { localStorage: { setItem() { throw new Error('quota'); } } },
+      'localStorage che lancia in lettura': {
+        get localStorage() { throw new Error('cookie bloccati'); },
+      },
+    };
+
+    for (const [nome, ambiente] of Object.entries(senzaDeposito)) {
+      let esito;
+      let esploso = false;
+      try { esito = scriviMarcatore(utenteA, { ambiente }); } catch { esploso = true; }
+
+      ok(`marcatore senza deposito (${nome}) · nessuna eccezione esce`, !esploso);
+      eq(`marcatore senza deposito (${nome}) · la scrittura dichiara di non essere avvenuta`,
+        esito, null);
+      /* e le due funzioni non si contraddicono: né la scrittura afferma
+         un marcatore che la lettura non trova, né viceversa */
+      ok(`marcatore senza deposito (${nome}) · e la lettura è d'accordo`,
+        ispezionaMarcatore({ ambiente }).stato !== 'letto');
+      eq(`marcatore senza deposito (${nome}) · niente da leggere`,
+        leggiMarcatore({ ambiente }), null);
+    }
+  }
+
+  /* --- 7-ter. CON UN DEPOSITO CHE FUNZIONA NON CAMBIA NIENTE --- */
+  {
+    const m = new Map();
+    const ambiente = {
+      localStorage: {
+        getItem: (k) => (m.has(k) ? m.get(k) : null),
+        setItem: (k, v) => { m.set(k, String(v)); },
+        removeItem: (k) => { m.delete(k); },
+      },
+    };
+
+    const scritto = scriviMarcatore(utenteA, { ambiente });
+    ok('marcatore scritto · la funzione restituisce il marcatore',
+      Boolean(scritto) && scritto.userId === utenteA && scritto.tipo === 'logout');
+    ok('marcatore scritto · e nel deposito c\'è il JSON di quel marcatore',
+      m.get(CHIAVE_MARCATORE) === JSON.stringify(scritto));
+
+    const visto = ispezionaMarcatore({ ambiente });
+    eq('marcatore scritto · la lettura stretta lo trova', visto.stato, 'letto');
+    eq('marcatore scritto · ed è lo stesso', visto.marcatore?.id, scritto.id);
+    eq('marcatore scritto · anche per la lettura dell\'accesso',
+      leggiMarcatore({ ambiente })?.id, scritto.id);
+
+    // senza utente non si scrive niente: era già così, e resta così
+    eq('marcatore · senza utente non si scrive', scriviMarcatore(null, { ambiente }), null);
+    eq('marcatore · e il deposito non è stato toccato',
+      m.get(CHIAVE_MARCATORE), JSON.stringify(scritto));
+  }
+
+  /* --- 7-quater. L'USCITA NON SI FERMA SE IL MARCATORE NON SI SCRIVE ---
+     Il valore di ritorno adesso è onesto, ma `eseguiLogout` continua a
+     non guardarlo di proposito: senza deposito restano il canale e
+     l'annuncio, e fermare l'uscita perché non c'è dove scrivere sarebbe
+     tenere dentro una persona che ha premuto «esci». */
+  {
+    const passi = [];
+    const esito = await eseguiLogout({
+      signOut: async () => ({}),
+      marca: () => { passi.push('marca'); return scriviMarcatore(utenteA, { ambiente: {} }); },
+      reset: () => passi.push('reset'),
+      annuncia: () => passi.push('annuncia'),
+      riuscito: () => passi.push('riuscito'),
+    });
+    eq('uscita senza deposito · si esce lo stesso', esito, 'uscito');
+    eq('uscita senza deposito · e la sequenza è quella di sempre',
+      passi.join(' → '), 'marca → reset → annuncia → riuscito');
   }
 
   /* --- 8. LA SEQUENZA DI USCITA scrive il marcatore, e solo se è uscita --- */

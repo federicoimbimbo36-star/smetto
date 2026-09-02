@@ -24,6 +24,8 @@
    quando la N è finita. Costa niente (le promesse si incatenano, non si
    accumula memoria) e toglie di mezzo un'intera famiglia di corse. */
 
+import { logKey, seenKey } from '../constants.js';
+
 const code = new Map();
 
 function inFila(key, lavoro) {
@@ -68,3 +70,38 @@ export const onCambioEsterno = (fn) => {
   try { return window.storage.onCambioEsterno?.(fn) || (() => {}); }
   catch { return () => {}; }
 };
+
+/* ------------------------------------------------------------------ */
+/*  TOGLIERE DA QUESTO DISPOSITIVO LE COPIE DI UN ACCOUNT              */
+/*                                                                     */
+/*  Da chiamare DOPO che la cancellazione remota è riuscita, mai prima: */
+/*  se il database rifiuta, l'account è ancora vivo e cancellargli il   */
+/*  registro sul telefono sarebbe una perdita di dati e basta.          */
+/*                                                                     */
+/*  LE SCRITTURE IN FILA VANNO ASPETTATE, e per un motivo che si vede   */
+/*  solo qui: `salva()` non aspetta `writeStore`, quindi al momento del */
+/*  «Elimina account» può esserci ancora un salvataggio incamminato su  */
+/*  `smetto:log:<uid>`. Cancellare prima che finisca vuol dire vederselo*/
+/*  riscrivere un istante dopo — la chiave torna, e nessuno se ne       */
+/*  accorge. `inFila` con un lavoro vuoto si mette in coda dietro a     */
+/*  tutto quello che è già partito su quella chiave e aspetta il suo    */
+/*  turno; da lì in poi non ne partono altre, perché chi chiama ha già  */
+/*  azzerato lo stato dell'account.                                     */
+/* ------------------------------------------------------------------ */
+export async function dimenticaUtente(uid) {
+  if (!uid) return { ok: false, rimosse: [], rimaste: [], motivo: 'utente' };
+
+  await Promise.all(
+    [logKey(uid), seenKey(uid)].map((k) => inFila(k, () => {}).catch(() => {})),
+  );
+
+  try {
+    const pulisci = window.storage?.dimenticaUtente;
+    if (typeof pulisci !== 'function') {
+      return { ok: false, rimosse: [], rimaste: [], motivo: 'non-supportato' };
+    }
+    return (await pulisci(uid)) || { ok: false, rimosse: [], rimaste: [], motivo: 'senza-esito' };
+  } catch (e) {
+    return { ok: false, rimosse: [], rimaste: [], motivo: e?.message || 'errore' };
+  }
+}

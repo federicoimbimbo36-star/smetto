@@ -75,6 +75,23 @@ export const MINUTI_PER_SIGARETTA = { uomo: 17, donna: 22, non_detto: 20 };
 export const AUTH_KEY = 'smetto:auth:v1';
 export const logKey = (uid) => `smetto:log:${uid}`;
 export const seenKey = (uid) => `smetto:seen:${uid}`;
+
+/* A CHI APPARTIENE UNA CHIAVE — l'inverso esatto delle due righe qui
+   sopra, e sta accanto a loro di proposito: chi compone e chi scompone
+   devono essere la stessa fonte. Viveva in installStorage.js, che però
+   tocca `window` al caricamento e quindi non si può aprire da un banco
+   di prova; da qui invece la usano il motore di sincronizzazione, la
+   pulizia del dispositivo e i controlli, tutti con lo stesso testo.
+
+   Serve dove NON c'è una sessione da cui leggere il proprietario: le
+   voci di coda della versione precedente, le scritture fatte a sessione
+   scaduta, e la cancellazione dell'account — dove la sessione è appena
+   stata chiusa proprio da noi. Se un domani nasce una terza chiave
+   privata, l'unico posto da aggiornare è questo. */
+export const uidDaChiave = (key) => {
+  const m = /^smetto:(?:log|seen):(.+)$/.exec(String(key));
+  return m ? m[1] : null;
+};
 /* groupKey / memberPrefix / memberKey sono spariti insieme al vecchio KV
    condiviso: i gruppi stanno su tabelle vere (vedi data/groups.js) e non
    hanno più una chiave di storage. Tenerli qui significava lasciare in giro

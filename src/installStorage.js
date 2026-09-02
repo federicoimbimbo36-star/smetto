@@ -30,9 +30,12 @@
 /* ------------------------------------------------------------------ */
 
 import { supabase, supabaseConfigurato } from './auth/supabaseClient';
+import { uidDaChiave } from './constants';
 import localKV from './windowStorage';
 import { fondiValore } from './utils/fusione';
-import { creaKvSincronizzato } from './utils/sincronizza';
+import { creaKvSincronizzato, CHIAVE_CODA } from './utils/sincronizza';
+import { dimenticaUtenteSulDispositivo } from './utils/puliziaLocale';
+import { rimuoviMarcatoreDi } from './utils/marcatoreLogout';
 
 /* Il database, ridotto ai cinque gesti che il motore sa fare. Le
    condizioni di concorrenza sono tutte qui dentro, in una riga:
@@ -68,27 +71,20 @@ const remoto = {
     .from('user_kv').select('key').eq('user_id', uid).like('key', `${prefix}%`),
 };
 
-/* A CHI APPARTIENE UNA CHIAVE.
-   Le due chiavi private dell'app sono `smetto:log:<uid>` e
-   `smetto:seen:<uid>` (vedi constants.js): l'utente ce l'hanno scritto
-   dentro. Il motore di sincronizzazione se lo fa dare da qui invece di
-   dedurlo, perché non deve sapere niente della forma delle chiavi — e
-   perché quando Capacitor o un domani un'altra chiave entreranno in
-   gioco, l'unico posto da aggiornare è questo.
+/* A CHI APPARTIENE UNA CHIAVE — `uidDaChiave`, importata da
+   constants.js, dove sta accanto a `logKey` e `seenKey` che quelle
+   chiavi le compongono. Il motore di sincronizzazione se la fa passare
+   da qui invece di dedurre: non deve sapere niente della forma delle
+   chiavi, e chi ne aggiunge una tocca un file solo.
 
-   Lo usa in due casi, e in nessuno dei due esiste una sessione da cui
-   leggere l'utente: le voci di coda lasciate dalla versione precedente,
-   che l'utente non lo salvavano, e le scritture fatte mentre la sessione
-   è scaduta. Nel funzionamento normale il proprietario è quello della
-   sessione, che è l'unica fonte autorevole. */
-const uidDaChiave = (key) => {
-  const m = /^smetto:(?:log|seen):(.+)$/.exec(String(key));
-  return m ? m[1] : null;
-};
+   Stava scritta qui dentro, ma questo file installa `window.storage` al
+   caricamento e quindi non si apre da un banco di prova: la stessa
+   espressione regolare finiva ricopiata nei controlli, dove poteva
+   restare indietro senza che nessuno se ne accorgesse. */
 
 const cloudKV = supabaseConfigurato
   ? creaKvSincronizzato({
-    locale: localKV, remoto, fondi: fondiValore, uidDaChiave,
+    locale: localKV, remoto, fondi: fondiValore, uidDaChiave, togliMarcatore: rimuoviMarcatoreDi,
   })
   : null;
 
@@ -132,6 +128,14 @@ const localeSolo = {
   list: (p) => localKV.list(p),
   onCambioEsterno: () => () => {},
   inSospeso: () => 0,
+  /* Senza database non c'è coda da svuotare, ma le chiavi private sono
+     le stesse e stanno nello stesso posto: la cancellazione dell'account
+     deve portarsele via anche qui. La funzione è la stessa del motore,
+     così i due percorsi non possono divergere. */
+  dimenticaUtente: (uid) => dimenticaUtenteSulDispositivo({
+    uid, locale: localKV, uidDaChiave, chiaveCoda: CHIAVE_CODA,
+    togliMarcatore: rimuoviMarcatoreDi,
+  }),
 };
 
 const scelto = cloudKV || localeSolo;

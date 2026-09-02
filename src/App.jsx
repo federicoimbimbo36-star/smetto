@@ -7,13 +7,15 @@ import {
   sod, dayDiff, ora, ymd, dataBreve, prossimaMedia,
   addGiorni, maxTs, daYmd, durata, componiTelefono, cifreLocali,
 } from './utils/format';
-import { readStore, writeStore, onCambioEsterno } from './utils/storage';
+import {
+  readStore, writeStore, onCambioEsterno, dimenticaUtente,
+} from './utils/storage';
 import {
   normalizzaRegistro, fondiRegistri, timbra, seppellisciTutto,
   aggiungiEvento, aggiungiEventi, rimuoviEvento, idsAggiunti,
 } from './utils/fusione';
 import auth from './auth';
-import { eliminaAccount } from './utils/account';
+import { eliminaAccount, messaggioEliminazione } from './utils/account';
 import { creaSequenza, caricaSessione } from './utils/sessione';
 import { creaCanaleAuth, creaGuardiaRisveglio } from './utils/canaleAuth';
 import { eseguiLogout, creaUscitaAnnunciata } from './utils/logout';
@@ -957,18 +959,35 @@ export default function App() {
          con quello che è riuscito. */
       onConfirm: async () => {
         const codici = dati?.groups || [];
-        const esito = await eliminaAccount({ codici, uid: user.id, groups, auth });
+        const esito = await eliminaAccount({
+          codici,
+          uid: user.id,
+          groups,
+          auth,
+          /* Lo stato dell'app si azzera QUI, fra la cancellazione remota
+             e la pulizia del dispositivo. Dopo sarebbe tardi: `salva()`
+             non aspetta `writeStore`, e un salvataggio ancora in volo
+             rimetterebbe `smetto:log:<uid>` sul telefono un istante dopo
+             che è stato tolto. Prima sarebbe presto: se la cancellazione
+             fallisce l'utente deve ritrovare i suoi dati a schermo. */
+          primaDiPulire: resetAuthState,
+          pulisci: dimenticaUtente,
+        });
         if (!esito.ok) {
           /* Le uscite dai gruppi che sono riuscite sono definitive: la
              lista locale deve dirlo, altrimenti l'app continua a
              pubblicare su gruppi che ha già lasciato. */
           if (esito.rimasti.length !== codici.length) salva({ ...dati, groups: esito.rimasti });
           setConfirmModal(null);
-          showToast('Non è stato possibile eliminare l’account. Controlla la rete e riprova.');
+          showToast(messaggioEliminazione(esito));
           return;
         }
         await annullaTappe().catch(() => {});
-        setConfirmModal(null); resetAuthState(); showToast('Account eliminato.');
+        setConfirmModal(null);
+        /* Non sempre «Account eliminato.»: se qualcosa è rimasto su
+           questo dispositivo lo si dice, invece di lasciar credere che
+           il telefono sia pulito. */
+        showToast(messaggioEliminazione(esito));
       },
     });
   }

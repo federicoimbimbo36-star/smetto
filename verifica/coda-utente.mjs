@@ -19,6 +19,8 @@
 /* ------------------------------------------------------------------ */
 
 import { creaKvSincronizzato, CHIAVE_CODA } from '../src/utils/sincronizza.js';
+/* la stessa che installStorage.js passa al motore, non una copia */
+import { uidDaChiave } from '../src/constants.js';
 import {
   fondiValore, normalizzaRegistro, aggiungiEvento, timbra,
 } from '../src/utils/fusione.js';
@@ -38,12 +40,6 @@ const vuoto = () => ({
   profile: { motivo: '', baseline: null, prezzoPacchetto: null, perPacchetto: 20, sesso: 'non_detto' },
   plans: {}, tappeViste: { ref: null, idx: [] }, ripartenzeBase: 0, ripartenze: 0, orologi: {},
 });
-
-/* la stessa funzione che installStorage.js passa al motore */
-const uidDaChiave = (key) => {
-  const m = /^smetto:(?:log|seen):(.+)$/.exec(String(key));
-  return m ? m[1] : null;
-};
 
 function creaDb() {
   const righe = new Map();               // `${uid}|${key}` → { value, rev }
