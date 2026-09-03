@@ -123,6 +123,7 @@ const supabaseAuth = {
   },
 
   async signUp(phone, password) {
+    if (password.length < 12) return { error: 'password-debole' };
     const { data, error } = await supabase.auth.signUp({
       email: phoneToTechnicalEmail(phone),
       password,
@@ -135,13 +136,10 @@ const supabaseAuth = {
       },
     });
 
-    if (error) {
-      return {
-        error: error.message.toLowerCase().includes('already registered')
-          ? 'già registrato'
-          : error.message,
-      };
-    }
+    // Non distinguere mai un numero già registrato da un altro errore di
+    // registrazione: l'account è identificato dall'email tecnica derivata
+    // dal numero e un messaggio specifico lo trasformerebbe in un oracolo.
+    if (error) return { error: 'registrazione-non-riuscita' };
     // Se non torna una sessione, il progetto ha ancora la conferma email
     // obbligatoria: va disattivata, perché qui l'email è tecnica e non reale.
     if (!data.session) {
@@ -228,6 +226,7 @@ const supabaseAuth = {
   },
 
   async changePassword(id, current, next) {
+    if (next.length < 12) return { error: 'password-debole' };
     // Supabase non verifica la password attuale in updateUser: la ricontrolliamo
     // con un login "a vuoto" sullo stesso account prima di procedere.
     const { data: sessionData } = await supabase.auth.getSession();
@@ -268,6 +267,7 @@ const supabaseAuth = {
   },
 
   async verifyRecovery(phone, code, newPassword) {
+    if (newPassword.length < 12) return { error: 'password-debole' };
     // Verifica il codice ricevuto via SMS: se corretto, Supabase apre già
     // una sessione autenticata, quindi possiamo impostare subito la nuova password.
     const { error: otpError } = await supabase.auth.verifyOtp({ phone, token: code, type: 'sms' });

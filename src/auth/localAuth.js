@@ -79,8 +79,9 @@ const localAuth = {
     return () => window.removeEventListener('storage', ascolta);
   },
   async signUp(phone, password) {
+    if (password.length < 12) return { error: 'password-debole' };
     const db = await readStore(AUTH_KEY, vuotoAuth);
-    if (db.byPhone[phone]) return { error: 'già registrato' };
+    if (db.byPhone[phone]) return { error: 'registrazione-non-riuscita' };
     const id = `u_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
     const salt = Math.random().toString(36).slice(2);
     db.users[id] = {
@@ -133,6 +134,7 @@ const localAuth = {
     return { profile: db.users[id].profile };
   },
   async changePassword(id, current, next) {
+    if (next.length < 12) return { error: 'password-debole' };
     const db = await readStore(AUTH_KEY, vuotoAuth);
     const rec = db.users[id];
     if (!rec) return { error: 'utente inesistente' };

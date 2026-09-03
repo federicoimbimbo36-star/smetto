@@ -729,7 +729,12 @@ export default function App() {
         : `Un numero ${authPaese.nome} ha fra ${authPaese.min} e ${authPaese.max} cifre dopo il ${authPaese.prefisso}.`);
       return;
     }
-    if (authPassword.length < 6) { setAuthError('La password deve avere almeno 6 caratteri.'); return; }
+    // Il vincolo nuovo vale per registrazione e cambi password. Non va
+    // applicato al login: altrimenti gli account esistenti con una password
+    // più corta resterebbero fuori prima di poterla aggiornare.
+    if (authMode === 'signup' && authPassword.length < 12) {
+      setAuthError('La password deve avere almeno 12 caratteri.'); return;
+    }
     if (authMode === 'signup' && authPassword !== authConfirmPassword) {
       setAuthError('Le due password non coincidono.'); return;
     }
@@ -741,9 +746,7 @@ export default function App() {
         : await auth.signIn(phone, authPassword);
       if (res.error) {
         setAuthError(authMode === 'signup'
-          ? (res.error === 'già registrato'
-            ? 'Questo numero di telefono ha già un account: prova ad accedere.'
-            : `Non è stato possibile creare l'account: ${res.error}`)
+          ? 'Non è stato possibile completare la registrazione. Riprova più tardi o accedi.'
           : 'Numero di telefono o password non corretti.');
         return;
       }
@@ -842,7 +845,7 @@ export default function App() {
 
   async function handleChangePassword() {
     if (!pwFields.current || !pwFields.next) { showToast('Inserisci la password attuale e quella nuova.'); return; }
-    if (pwFields.next.length < 6) { showToast('La nuova password deve avere almeno 6 caratteri.'); return; }
+    if (pwFields.next.length < 12) { showToast('La nuova password deve avere almeno 12 caratteri.'); return; }
     if (pwFields.next !== pwFields.confirm) { showToast('La conferma non coincide con la nuova password.'); return; }
     const res = await auth.changePassword(user.id, pwFields.current, pwFields.next);
     if (res.error) { showToast('La password attuale non è corretta.'); return; }

@@ -17,7 +17,7 @@ export default function RecoveryOtpModal({ phone, onCancel, onVerify }) {
       setStep('password');
       return;
     }
-    if (password.length < 6) { setError('La nuova password deve avere almeno 6 caratteri.'); return; }
+    if (password.length < 12) { setError('La nuova password deve avere almeno 12 caratteri.'); return; }
     if (password !== confirm) { setError('La conferma non coincide con la nuova password.'); return; }
     setBusy(true);
     const res = await onVerify(code.trim(), password);
@@ -51,7 +51,7 @@ export default function RecoveryOtpModal({ phone, onCancel, onVerify }) {
               <div className="campo-password">
                 <input
                   id="otp-pw" className="campo-input" type={showPassword ? 'text' : 'password'}
-                  placeholder="Almeno 6 caratteri" value={password}
+                  placeholder="Almeno 12 caratteri" value={password}
                   onChange={(e) => setPassword(e.target.value)} onKeyDown={invio}
                   autoComplete="new-password" autoFocus disabled={busy}
                 />

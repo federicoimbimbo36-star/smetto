@@ -60,7 +60,7 @@ export default function AuthScreen(props) {
         <div className="campo-password">
           <input
             id="a-pw" className="campo-input" type={showPassword ? 'text' : 'password'}
-            placeholder="Almeno 6 caratteri" value={password}
+            placeholder={registrazione ? 'Almeno 12 caratteri' : 'Password'} value={password}
             onChange={(e) => setPassword(e.target.value)} onKeyDown={invio}
             autoComplete={registrazione ? 'new-password' : 'current-password'} disabled={busy}
           />

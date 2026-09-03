@@ -379,7 +379,7 @@ export default function ProfiloScreen({
           value={pwFields.current} onChange={(e) => setPwFields((p) => ({ ...p, current: e.target.value }))}
         />
         <input
-          className="campo-input" type="password" placeholder="Nuova password" autoComplete="new-password"
+          className="campo-input" type="password" placeholder="Nuova password (almeno 12 caratteri)" autoComplete="new-password"
           value={pwFields.next} onChange={(e) => setPwFields((p) => ({ ...p, next: e.target.value }))}
         />
         <input
