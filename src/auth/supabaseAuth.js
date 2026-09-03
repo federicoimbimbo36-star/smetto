@@ -18,10 +18,80 @@
 /* intercetta il suo errore 23505.                                      */
 /* ------------------------------------------------------------------ */
 
-import { supabase, phoneToTechnicalEmail } from './supabaseClient';
+/* L'estensione `.js` è esplicita apposta: Vite la mette da sé, node no.
+   Senza, `verifica/password-debole.mjs` non potrebbe importare le funzioni
+   VERE di questo file e finirebbe per provare una copia della loro logica
+   riscritta nel test — cioè niente. */
+import { supabase, phoneToTechnicalEmail } from './supabaseClient.js';
 
 /* deve restare allineato al primo colore di PALETTE in constants.js */
 const PALETTE_DEFAULT = '#D19A3E';
+
+/* ------------------------------------------------------------------ */
+/* PASSWORD SOTTO IL MINIMO DEL SERVER                                 */
+/*                                                                     */
+/* Alzando la lunghezza minima a 12 su Supabase, chi si era registrato  */
+/* prima con 8 caratteri NON viene chiuso fuori. Il server controlla la */
+/* robustezza dopo aver già verificato la password, mette da parte      */
+/* l'esito, emette lo stesso la sessione e risponde 200 allegando       */
+/* `weak_password: { message, reasons }`                                */
+/* (`internal/api/token.go`: il controllo riempie una variabile, non    */
+/*  interrompe; `sendJSON(w, http.StatusOK, token)` alla fine).         */
+/*                                                                     */
+/* `auth-js` 2.112 legge quel campo con `_sessionResponsePassword` e lo */
+/* consegna come AVVISO in `data.weakPassword`, con `error` a null.     */
+/* L'`AuthWeakPasswordError` nasce solo da `handleError`, cioè da una   */
+/* risposta HTTP di errore: è la forma di registrazione e cambio        */
+/* password, non quella dell'accesso.                                   */
+/*                                                                     */
+/* Da qui le due cose che servono, ed erano tutte e due mancanti:       */
+/*                                                                     */
+/*  1. l'avviso non va buttato via. `signIn` lo scartava insieme al     */
+/*     resto di `data`, quindi l'utente storico entrava e non sapeva    */
+/*     di dover cambiare password: restava debole per sempre, e alzare  */
+/*     il minimo non serviva a niente per chi c'era già.                */
+/*                                                                     */
+/*  2. una password debole non è una password sbagliata. `signIn`       */
+/*     appiattiva QUALUNQUE errore su 'credenziali': basta che una      */
+/*     versione futura della libreria, o un'altra `X-Client-Info`,      */
+/*     porti la password debole sul percorso dell'errore, e l'utente    */
+/*     legge «password non corretta» avendo digitato quella giusta.     */
+/*     Costa tre righe non farsi trovare lì.                            */
+/* ------------------------------------------------------------------ */
+
+/* Vero solo per l'errore di password debole. Riconosciuto per nome E per
+   codice perché `auth-js` li riempie in punti diversi, e per niente altro:
+   confondere qui un errore di rete con una password debole farebbe entrare
+   qualcuno che non doveva entrare. */
+export function passwordDebole(error) {
+  if (!error || typeof error !== 'object') return false;
+  return error.name === 'AuthWeakPasswordError' || error.code === 'weak_password';
+}
+
+/* Legge la risposta di `signInWithPassword` e decide UNA cosa sola: se si
+   entra, e se c'è qualcosa da dire sulla password. Sta fuori dal metodo
+   perché è l'unico pezzo che si può provare senza un server: la prova è in
+   `verifica/password-debole.mjs`.
+
+   La sessione si guarda PRIMA dell'errore, non dopo. Oggi le due cose non
+   convivono mai, ma se un giorno convivessero l'ordine inverso butterebbe
+   via un accesso riuscito. */
+export function leggiEsitoAccesso(esito) {
+  const data = esito?.data;
+  const error = esito?.error;
+
+  if (data?.session && data?.user) {
+    const motivi = Array.isArray(data.weakPassword?.reasons) ? data.weakPassword.reasons : [];
+    return { utente: data.user, motivi };
+  }
+
+  /* Nessuna sessione. Se il motivo è la password debole va detto com'è:
+     mandare questa persona a riprovare la password che ha appena digitato
+     correttamente è un vicolo cieco senza uscita. */
+  if (passwordDebole(error)) return { error: 'password-debole' };
+
+  return { error: 'credenziali' };
+}
 
 async function fetchProfile(id) {
   const { data, error } = await supabase
@@ -151,13 +221,21 @@ const supabaseAuth = {
   },
 
   async signIn(phone, password) {
-    const { data, error } = await supabase.auth.signInWithPassword({
+    const esito = await supabase.auth.signInWithPassword({
       email: phoneToTechnicalEmail(phone),
       password,
     });
-    if (error) return { error: 'credenziali' };
-    const profile = await fetchProfile(data.user.id);
-    return { user: { ...profile, id: data.user.id, phone: profile.phone || phone } };
+
+    const letto = leggiEsitoAccesso(esito);
+    if (letto.error) return { error: letto.error };
+
+    const profile = await fetchProfile(letto.utente.id);
+    return {
+      user: { ...profile, id: letto.utente.id, phone: profile.phone || phone },
+      /* Presente solo quando c'è davvero qualcosa da sistemare, così chi
+         chiama può limitarsi a `if (res.passwordDaAggiornare)`. */
+      ...(letto.motivi.length ? { passwordDaAggiornare: letto.motivi } : null),
+    };
   },
 
   /* IL PULSANTE «ESCI»: la scheda che l'utente ha davanti.
@@ -233,8 +311,12 @@ const supabaseAuth = {
     const email = sessionData.session?.user?.email;
     if (!email) return { error: 'sessione scaduta' };
 
+    /* «Debole» qui non vuol dire «sbagliata»: è esattamente la password che
+       questa persona è venuta a cambiare. Se la ricontrolla e la rifiuta,
+       l'utente storico non ha più nessun modo di mettersi in regola —
+       l'accesso lo lasciano entrare, il cambio password no. Vicolo cieco. */
     const { error: checkError } = await supabase.auth.signInWithPassword({ email, password: current });
-    if (checkError) return { error: 'password attuale' };
+    if (checkError && !passwordDebole(checkError)) return { error: 'password attuale' };
 
     const { error } = await supabase.auth.updateUser({ password: next });
     if (error) return { error: error.message };

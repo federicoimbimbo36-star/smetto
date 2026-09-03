@@ -745,9 +745,18 @@ export default function App() {
         ? await auth.signUp(phone, authPassword)
         : await auth.signIn(phone, authPassword);
       if (res.error) {
-        setAuthError(authMode === 'signup'
-          ? 'Non è stato possibile completare la registrazione. Riprova più tardi o accedi.'
-          : 'Numero di telefono o password non corretti.');
+        if (authMode === 'signup') {
+          setAuthError('Non è stato possibile completare la registrazione. Riprova più tardi o accedi.');
+        } else if (res.error === 'password-debole') {
+          /* Non è la password sbagliata: è quella giusta, ma più corta del
+             minimo del server, e senza sessione. Mandare qui la persona a
+             ridigitare quella che ha appena digitato bene sarebbe un giro
+             a vuoto senza uscita, e dopo tre tentativi darebbe la colpa a
+             sé stessa. Il recupero è l'unica strada che porta fuori. */
+          setAuthError('La tua password è più corta del minimo richiesto ora. Usa «Password dimenticata?» per impostarne una nuova di almeno 12 caratteri.');
+        } else {
+          setAuthError('Numero di telefono o password non corretti.');
+        }
         return;
       }
       /* ANCHE L'ACCESSO FATTO QUI PASSA DALLA SEQUENZA PROTETTA.
@@ -792,9 +801,27 @@ export default function App() {
          silenzio: dire «Bentornato» a chi nel frattempo è diventato un
          altro utente sarebbe l'ultima cosa rimasta di questo difetto. */
       if (esito !== 'entrato') return;
+      setAuthPassword(''); setAuthConfirmPassword('');
+
+      /* PASSWORD PIÙ CORTA DEL MINIMO: dentro sì, ma non su «Oggi».
+
+         Il server ha alzato il minimo a 12 dopo che questa persona si era
+         già registrata. La sessione l'ha emessa lo stesso — nessuno resta
+         chiuso fuori — ma allega l'avviso, e un avviso che l'app scarta è
+         un avviso che non esiste: si entra su Oggi, si conta la sigaretta,
+         e la password corta resta lì per sempre.
+
+         Quindi si atterra sul Profilo, dove il campo del cambio password
+         è già a schermo. Nessun blocco: l'app si usa lo stesso, e la
+         schermata giusta è a un tocco di distanza invece che a quattro. */
+      if (res.passwordDaAggiornare) {
+        setActiveTab('profilo');
+        showToast('Ora serve una password di almeno 12 caratteri: cambiala qui 🔐');
+        return;
+      }
+
       setActiveTab('oggi');
       showToast(authMode === 'signup' ? 'Account creato. Si comincia 🎯' : 'Bentornato 👋');
-      setAuthPassword(''); setAuthConfirmPassword('');
     } catch (err) {
       setAuthError('Errore di connessione: controlla la tua rete e riprova.');
     } finally {
