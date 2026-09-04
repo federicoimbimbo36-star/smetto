@@ -19,18 +19,21 @@
 /* Nessuna chiamata a Supabase, né di produzione né di altro tipo.      */
 /* ------------------------------------------------------------------ */
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+import { createServer } from 'node:http';
 
 import {
-  VERSIONE_STATO, PERCORSO_STATO, emailDa,
+  VERSIONE_STATO, PERCORSO_STATO, FLAG_PRO, emailDa,
   generaPasswordForte, nuovoStato, salvaStato, leggiStato, rimuoviStato,
-  aggiungiPassword, segnaEsistenza, eseguiPulizia,
+  aggiungiPassword, segnaEsistenza, segnaSaltato, eseguiPulizia,
+  provaLeakedRichiesta, creaRapporto,
 } from './password-server.mjs';
 
 let passati = 0;
@@ -313,9 +316,234 @@ ok('F2  lunghe abbastanza per il minimo a 12',
 ok('F3  con maiuscole, minuscole, cifre e simboli',
   [...generate].every((p) => /[A-Z]/.test(p) && /[a-z]/.test(p) && /[0-9]/.test(p) && /[^A-Za-z0-9]/.test(p)));
 
+/* ================================================================== */
+/* G. Il rapporto sa dire «saltata» senza dire «fallita»               */
+/* ================================================================== */
+
+const zitto = () => {};
+
+const r1 = creaRapporto(zitto);
+r1.annota('a', '', '', true);
+r1.annota('b', '', '', true);
+r1.salta('c', 'saltata: richiede Supabase Pro');
+const c1 = r1.chiudi();
+ok('G1  una prova saltata non fa fallire la verifica', c1.tutteOk === true);
+eq('G1b conta solo quello che ha eseguito', [c1.eseguite, c1.passate, c1.saltate], [2, 2, 1]);
+
+const r2 = creaRapporto(zitto);
+r2.annota('a', '', '', true);
+r2.annota('b', '', '', false);
+r2.salta('c', 'saltata: richiede Supabase Pro');
+const c2 = r2.chiudi();
+ok('G2  una prova fallita fa fallire la verifica', c2.tutteOk === false);
+eq('G2b la saltata resta fuori dal conteggio', [c2.eseguite, c2.saltate], [2, 1]);
+
+const r3 = creaRapporto(zitto);
+r3.salta('unica', 'saltata: richiede Supabase Pro');
+ok('G3  solo saltate → nessun fallimento', r3.chiudi().tutteOk === true);
+
+/* La saltata resta VISIBILE: sparire in silenzio farebbe dimenticare che
+   c'è una prova da riaccendere il giorno che il piano cambia. */
+const righeRapporto = [];
+const r4 = creaRapporto((t) => righeRapporto.push(t));
+r4.salta('2. Registrazione con password compromessa', 'saltata: richiede Supabase Pro');
+r4.chiudi();
+ok('G4  il motivo è scritto nel rapporto',
+  righeRapporto.some((t) => t.includes('saltata: richiede Supabase Pro')));
+ok('G4b e anche nel riepilogo finale',
+  righeRapporto.some((t) => t.startsWith('–') && t.includes('password compromessa')));
+
+/* ================================================================== */
+/* H. Il flag                                                          */
+/* ================================================================== */
+
+ok('H1  senza argomenti la prova leaked non parte', provaLeakedRichiesta([]) === false);
+ok('H1b nemmeno con altri argomenti', provaLeakedRichiesta(['--verbose', 'pro']) === false);
+ok('H2  parte solo con il flag esatto', provaLeakedRichiesta([FLAG_PRO]) === true);
+eq('H2b il flag è quello documentato', FLAG_PRO, '--pro');
+
+/* Saltare una prova non cancella quello che sapevamo. Se l'account pwned
+   era già stato creato da una verifica precedente, `esiste` resta `true` e
+   `pulisci` continua a occuparsene. */
+const sIgnoto = segnaSaltato(nuovoStato(PROGETTO), 'pwned');
+eq('H3  esistenza ignota → segnato come mai creato', sIgnoto.account.pwned.esiste, false);
+
+const sCreato = nuovoStato(PROGETTO);
+segnaEsistenza(sCreato, 'pwned', true);
+segnaSaltato(sCreato, 'pwned');
+eq('H4  esistenza nota → il salto NON la cancella', sCreato.account.pwned.esiste, true);
+
+/* Requisito 5, misurato: uno stato vecchio con l'account pwned vivo deve
+   ancora essere ripulito. */
+const eVecchio = await eseguiPulizia(
+  staccato((s) => {
+    segnaEsistenza(s, 'legacy', false);
+    segnaEsistenza(s, 'corta', false);
+    segnaEsistenza(s, 'pwned', true);
+    segnaSaltato(s, 'pwned');
+  }),
+  finto({ [emailDa('+390000000003')]: 'passwordpassword' }),
+);
+ok('H5  stato precedente con account pwned → viene cancellato', eVecchio.tutteRiuscite === true);
+eq('H5b e lo dice', eVecchio.righe.find((r) => r.id === 'pwned').nota,
+  'cancellato (password più recente)');
+
+/* Stato nuovo: la prova è stata saltata, l'account non è mai nato. */
+const eNuovo = await eseguiPulizia(
+  staccato((s) => { segnaSaltato(s, 'pwned'); segnaEsistenza(s, 'legacy', false); segnaEsistenza(s, 'corta', false); }),
+  finto({}),
+);
+ok('H6  stato nuovo: niente da cancellare, e non è un guaio', eNuovo.tutteRiuscite === true);
+eq('H6b e lo dice', eNuovo.righe.find((r) => r.id === 'pwned').nota,
+  'mai creato, niente da cancellare');
+
+/* ================================================================== */
+/* I. La CLI vera, contro un server finto su 127.0.0.1                 */
+/* ================================================================== */
+/* I blocchi G e H provano le funzioni. Questo prova il COMANDO: che
+   `verifica` non registri l'account pwned e non chiami HIBP.
+   «Non chiamare» non si legge dal codice, si misura — e si misura solo
+   guardando cosa esce dal processo. Il server è locale, quindi ogni
+   richiesta che parte finisce nel registro qui sotto: se l'account pwned
+   venisse creato lo si vedrebbe, e se una riga della prova 2 comparisse
+   nel rapporto vorrebbe dire che il ramo è stato percorso — che è l'unico
+   punto da cui si contatta HIBP. */
+
+const chiamate = [];
+const sessione = {
+  access_token: 'jwt.finto', token_type: 'bearer', expires_in: 3600,
+  expires_at: Math.floor(Date.now() / 1000) + 3600, refresh_token: 'rf',
+  user: { id: 'legacy', email: emailDa(TEL_LEGACY), aud: 'authenticated' },
+};
+const debole = { message: 'Password should be at least 12 characters.', reasons: ['length'] };
+
+const finto12 = createServer((req, res) => {
+  let corpo = '';
+  req.on('data', (c) => { corpo += c; });
+  req.on('end', () => {
+    let dati = {};
+    try { dati = JSON.parse(corpo || '{}'); } catch { /* corpo non JSON */ }
+    chiamate.push({ metodo: req.method, percorso: req.url, email: dati.email ?? null });
+    const invia = (stato, oggetto) => {
+      res.writeHead(stato, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(oggetto));
+    };
+    /* Un server con il minimo a 12: rifiuta le registrazioni corte, fa
+       entrare l'account storico allegando l'avviso, e accetta il cambio
+       password solo verso qualcosa di lungo abbastanza. */
+    if (req.url.startsWith('/auth/v1/signup')) {
+      return invia(422, { code: 422, error_code: 'weak_password', msg: 'Password should be at least 12 characters.', weak_password: { reasons: ['length'] } });
+    }
+    if (req.url.startsWith('/auth/v1/token')) {
+      return invia(200, { ...sessione, weak_password: debole });
+    }
+    if (req.url.startsWith('/auth/v1/user')) {
+      return (dati.password ?? '').length >= 12
+        ? invia(200, { id: 'legacy' })
+        : invia(422, { code: 422, error_code: 'weak_password', msg: 'Password should be at least 12 characters.' });
+    }
+    return invia(404, {});
+  });
+});
+
+await new Promise((r) => { finto12.listen(0, '127.0.0.1', r); });
+const BASE = `http://127.0.0.1:${finto12.address().port}`;
+
+/* Una spia caricata PRIMA dello script, che avvolge `fetch` e segnala ogni
+   indirizzo che non sia il server finto. «Non contatta HIBP» letto dal
+   codice è una lettura; letto qui è una misura — e copre tutto il processo,
+   non solo il punto che si è pensato di guardare. */
+const spia = join(banco, 'spia-rete.mjs');
+writeFileSync(spia, `
+const originale = globalThis.fetch;
+globalThis.fetch = (...a) => {
+  const url = String(a[0] && a[0].url ? a[0].url : a[0]);
+  if (!url.includes('127.0.0.1')) console.log('SPIA-RETE ' + url);
+  return originale(...a);
+};
+`);
+
+/* `spawn` e non `spawnSync`: il server finto vive in QUESTO processo, e
+   `spawnSync` ne blocca il loop degli eventi finché il figlio non finisce.
+   Il figlio chiederebbe, il genitore non potrebbe rispondere, e i due si
+   aspetterebbero a vicenda per sempre. */
+const eseguiCli = (args) => new Promise((risolvi) => {
+  const figlio = spawn(process.execPath, ['--import', pathToFileURL(spia).href, MODULO, ...args], {
+    env: { ...process.env, VITE_SUPABASE_URL: BASE, VITE_SUPABASE_PUBLISHABLE_KEY: 'chiave-finta' },
+  });
+  let stdout = '';
+  figlio.stdout.on('data', (d) => { stdout += d; });
+  figlio.stderr.on('data', (d) => { stdout += d; });
+  figlio.on('close', (status) => risolvi({ status, stdout }));
+});
+
+/* --- predefinito: piano free ------------------------------------- */
+rimuoviStato(PERCORSO_STATO);
+salvaStato(segnaEsistenza(nuovoStato(BASE), 'legacy', true), PERCORSO_STATO);
+chiamate.length = 0;
+const corsaFree = await eseguiCli(['verifica']);
+
+ok('I1  la verifica esce con successo sul piano free', corsaFree.status === 0,
+  `exit=${corsaFree.status}\n${corsaFree.stdout.slice(-600)}`);
+ok('I2  il rapporto dice «saltata: richiede Supabase Pro»',
+  /saltata: richiede Supabase Pro/.test(corsaFree.stdout));
+ok('I3  non la conta come fallita', !/FALLITA.*compromess/i.test(corsaFree.stdout));
+ok('I4  il riepilogo dichiara la saltata', /,\s*1 saltata\b/.test(corsaFree.stdout),
+  corsaFree.stdout.split('RAPPORTO')[1]?.slice(0, 80));
+
+const emailPwned = emailDa('+390000000003');
+ok('I5  NESSUNA registrazione dell\'account con password compromessa',
+  !chiamate.some((c) => c.percorso.startsWith('/auth/v1/signup') && c.email === emailPwned),
+  JSON.stringify(chiamate.filter((c) => c.email === emailPwned)));
+ok('I6  nessuna richiesta di alcun tipo per quell\'account',
+  !chiamate.some((c) => c.email === emailPwned));
+
+/* Le righe «2a»/«2b» si stampano solo percorrendo il ramo, ed è l'unico
+   punto del file da cui parte una chiamata a HaveIBeenPwned. */
+ok('I7  nessuna traccia del ramo che contatta HIBP',
+  !/2a\.|2b\.|data breach|non compromessa/.test(corsaFree.stdout), corsaFree.stdout.slice(-400));
+
+/* La misura, non l'indizio: la spia elenca ogni indirizzo esterno che il
+   processo ha davvero chiesto. Deve essere vuota — HIBP compreso, anche
+   quello della prova 4b, che è un ramo diverso e si sarebbe potuto
+   dimenticare. */
+const versoFuori = corsaFree.stdout.split('\n').filter((r) => r.startsWith('SPIA-RETE'));
+eq('I7b nessuna richiesta fuori dal server finto', versoFuori, []);
+
+/* Le altre prove invece sono state eseguite davvero. */
+ok('I8  la prova 1 è stata eseguita', /1\. Registrazione con 11 caratteri/.test(corsaFree.stdout));
+ok('I9  le prove 3 e 4 sono state eseguite',
+  /3a\./.test(corsaFree.stdout) && /4a\./.test(corsaFree.stdout) && /4b\./.test(corsaFree.stdout));
+
+const dopoFree = leggiStato(PERCORSO_STATO);
+eq('I10 l\'account pwned resta segnato come mai creato', dopoFree.account.pwned.esiste, false);
+
+/* --- con il flag -------------------------------------------------- */
+chiamate.length = 0;
+const corsaPro = await eseguiCli(['verifica', FLAG_PRO]);
+ok('I11 con --pro il ramo viene percorso', /2b\./.test(corsaPro.stdout), corsaPro.stdout.slice(-400));
+ok('I12 con --pro l\'account pwned viene registrato',
+  chiamate.some((c) => c.percorso.startsWith('/auth/v1/signup') && c.email === emailPwned));
+ok('I13 con --pro la prova non risulta saltata',
+  !/saltata: richiede Supabase Pro/.test(corsaPro.stdout));
+
+/* --- senza file di stato: ci si ferma prima di toccare la rete ---- */
+rimuoviStato(PERCORSO_STATO);
+chiamate.length = 0;
+const senzaStato = await eseguiCli(['verifica']);
+eq('I14 senza stato la verifica si ferma', senzaStato.status, 1);
+eq('I15 e non manda nessuna richiesta', chiamate.length, 0);
+
+/* --- la riga di comando documenta il flag ------------------------- */
+const uso = await eseguiCli(['boh']);
+ok('I16 l\'uso menziona --pro', uso.stdout.includes(FLAG_PRO));
+
+finto12.close();
+
 /* ------------------------------------------------------------------ */
 
 rmSync(banco, { recursive: true, force: true });
+rimuoviStato(PERCORSO_STATO);
 
 console.log(`\npassword-server-stato: ${passati} controlli superati`);
 if (falliti.length) {

@@ -9,6 +9,12 @@
  *   node verifica/password-server.mjs verifica   # DOPO aver cambiato *
  *   node verifica/password-server.mjs pulisci    # cancella le prove  *
  *                                                                     *
+ * La prova sulle password compromesse resta SPENTA: richiede il piano *
+ * Pro, e sul free non farebbe altro che registrare un account con una *
+ * password nota. Dopo un eventuale passaggio di piano:                *
+ *                                                                     *
+ *   node verifica/password-server.mjs verifica --pro                  *
+ *                                                                     *
  * L'ORDINE NON È UN DETTAGLIO: l'account "legacy" con password corta  *
  * si può creare solo finché il minimo è ancora 6. Se alzi il minimo   *
  * prima di lanciare `prepara`, la prova 3 non è più eseguibile.       *
@@ -170,6 +176,39 @@ export function segnaEsistenza(stato, id, esiste) {
   return stato;
 }
 
+/* Per una prova SALTATA. Scrive «non creato» soltanto se non sapevamo già
+   il contrario, e la differenza non è formale: chi ha lanciato le prove
+   prima di questa correzione, sul piano free, si è ritrovato l'account
+   pwned davvero creato — la protezione non c'era, quindi la registrazione
+   è passata. Se saltare la prova oggi sovrascrivesse quel `true` con un
+   `false`, `pulisci` lo salterebbe come «mai creato» e quell'account
+   resterebbe sul progetto per sempre. Una prova che oggi non si esegue non
+   può cancellare quello che si è imparato ieri. */
+export function segnaSaltato(stato, id) {
+  const conto = stato.account[id];
+  if (!conto) throw new Error(`Account di prova sconosciuto: ${id}`);
+  if (conto.esiste === null) conto.esiste = false;
+  return stato;
+}
+
+/* ------------------------------------------------------------------ */
+/* Il piano Supabase                                                   */
+/*                                                                     */
+/* La protezione contro le password compromesse (HIBP) esiste solo dal */
+/* piano Pro in su. Sul free la prova 2 non misura il server: misura   */
+/* la sua assenza, e per farlo REGISTRA davvero un account con         */
+/* `passwordpassword` — una password nota a chiunque, su un progetto    */
+/* dove nessuno la sta cercando. Una prova che non può passare, che    */
+/* lascia dietro di sé esattamente la cosa da cui dovrebbe difendere.  */
+/*                                                                     */
+/* Quindi di suo non parte. Si accende con `--pro`, esplicitamente, il */
+/* giorno che il piano cambia.                                         */
+/* ------------------------------------------------------------------ */
+export const FLAG_PRO = '--pro';
+export function provaLeakedRichiesta(argomenti = []) {
+  return argomenti.includes(FLAG_PRO);
+}
+
 /* ------------------------------------------------------------------ */
 /* Il cuore della pulizia, senza rete                                  */
 /*                                                                     */
@@ -290,22 +329,49 @@ async function quanteVolteViolata(password) {
 
 /* ------------------------------------------------------------------ */
 /* Rapporto                                                            */
+/*                                                                     */
+/* Tre esiti, non due. «Saltata» non è «fallita»: una prova che non si  */
+/* può eseguire su questo piano non dice niente sul server, e contarla  */
+/* fra le fallite fa uscire l'intera verifica in rosso per una cosa che */
+/* non è un difetto. Un rosso che si impara a ignorare è peggio di      */
+/* nessun rosso, perché copre anche quelli veri.                        */
+/*                                                                     */
+/* Le saltate restano nel rapporto, visibili, con il motivo: sparire in */
+/* silenzio sarebbe l'errore opposto — un giorno si passa a Pro e       */
+/* nessuno si ricorda che c'era una prova da riaccendere.               */
 /* ------------------------------------------------------------------ */
-const esiti = [];
-function annota(passo, atteso, ottenuto, ok) {
-  esiti.push({ passo, atteso, ottenuto, ok });
-  console.log(`${ok ? '  OK  ' : ' FALLITA '} ${passo}`);
-  console.log(`        atteso:   ${atteso}`);
-  console.log(`        ottenuto: ${ottenuto}\n`);
-}
-
-function stampaRapporto() {
-  const passate = esiti.filter((e) => e.ok).length;
-  console.log('─'.repeat(64));
-  console.log(`RAPPORTO: ${passate} prove su ${esiti.length}`);
-  console.log('─'.repeat(64));
-  for (const e of esiti) console.log(`${e.ok ? '✓' : '✗'} ${e.passo} → ${e.ottenuto}`);
-  return passate === esiti.length;
+export function creaRapporto(scrivi = console.log) {
+  const voci = [];
+  return {
+    voci,
+    annota(passo, atteso, ottenuto, ok) {
+      voci.push({ passo, atteso, ottenuto, ok, saltata: false });
+      scrivi(`${ok ? '  OK  ' : ' FALLITA '} ${passo}`);
+      scrivi(`        atteso:   ${atteso}`);
+      scrivi(`        ottenuto: ${ottenuto}\n`);
+    },
+    salta(passo, motivo) {
+      voci.push({ passo, motivo, ok: null, saltata: true });
+      scrivi(` SALTATA  ${passo}`);
+      scrivi(`        motivo:   ${motivo}\n`);
+    },
+    chiudi() {
+      const eseguite = voci.filter((v) => !v.saltata);
+      const passate = eseguite.filter((v) => v.ok).length;
+      const saltate = voci.length - eseguite.length;
+      scrivi('─'.repeat(64));
+      scrivi(`RAPPORTO: ${passate} prove su ${eseguite.length}`
+        + (saltate ? `, ${saltate} saltat${saltate === 1 ? 'a' : 'e'}` : ''));
+      scrivi('─'.repeat(64));
+      for (const v of voci) {
+        scrivi(v.saltata
+          ? `– ${v.passo} → ${v.motivo}`
+          : `${v.ok ? '✓' : '✗'} ${v.passo} → ${v.ottenuto}`);
+      }
+      /* Il successo si misura solo su quello che è stato eseguito. */
+      return { eseguite: eseguite.length, passate, saltate, tutteOk: passate === eseguite.length };
+    },
+  };
 }
 
 /* Le fasi 2 e 3 non possono inventarsi le credenziali: se il file non c'è,
@@ -379,13 +445,15 @@ async function prepara() {
 /* ------------------------------------------------------------------ */
 /* Fase 2 — DOPO aver alzato il minimo                                 */
 /* ------------------------------------------------------------------ */
-async function verifica() {
+async function verifica(argomenti = []) {
   const stato = statoObbligatorio('verifica');
   const [PW_LEGACY_ATTUALE] = stato.account.legacy.passwordDaProvare;
   const PW_NUOVA = stato.passwordNuova;
+  const conPro = provaLeakedRichiesta(argomenti);
+  const { annota, salta, chiudi } = creaRapporto();
 
   console.log(`\nProgetto: ${URL_BASE}`);
-  console.log('Fase «verifica»: quattro prove sul server vero.\n');
+  console.log(`Fase «verifica»${conPro ? ` (${FLAG_PRO}: incluse le prove che richiedono Supabase Pro)` : ''}.\n`);
 
   /* --- PROVA 1: registrazione con 11 caratteri ------------------- */
   const p1 = await registra(TEL_CORTA, PW_11);
@@ -399,30 +467,41 @@ async function verifica() {
   await attendi(1200);
 
   /* --- PROVA 2: password compromessa ----------------------------- */
-  const volte = await quanteVolteViolata(PW_PWNED);
-  if (volte === null) {
-    annota('2a. Premessa: la password di prova è davvero compromessa',
-      'conteggio HIBP > 0', 'HIBP non raggiungibile — prova non conclusiva', false);
+  /* Tutto dentro il ramo, HIBP compreso: saltare la prova ma chiamare
+     comunque HaveIBeenPwned sarebbe saltarla a metà. */
+  if (!conPro) {
+    salvaStato(segnaSaltato(stato, 'pwned'));
+    salta('2. Registrazione con password compromessa',
+      `saltata: richiede Supabase Pro — riesegui con ${FLAG_PRO} dopo il passaggio di piano`);
+    console.log('     Sul piano free la protezione HIBP non è attivabile, quindi la prova');
+    console.log('     non potrebbe passare: registrerebbe soltanto un account con una');
+    console.log('     password nota. Nessuna chiamata a HIBP, nessun account creato.\n');
   } else {
-    annota('2a. Premessa: la password di prova è davvero compromessa',
-      'conteggio HIBP > 0', `trovata ${volte.toLocaleString('it-IT')} volte nei data breach`, volte > 0);
-  }
+    const volte = await quanteVolteViolata(PW_PWNED);
+    if (volte === null) {
+      annota('2a. Premessa: la password di prova è davvero compromessa',
+        'conteggio HIBP > 0', 'HIBP non raggiungibile — prova non conclusiva', false);
+    } else {
+      annota('2a. Premessa: la password di prova è davvero compromessa',
+        'conteggio HIBP > 0', `trovata ${volte.toLocaleString('it-IT')} volte nei data breach`, volte > 0);
+    }
 
-  const p2 = await registra(TEL_PWNED, PW_PWNED);
-  salvaStato(segnaEsistenza(stato, 'pwned', p2.stato === 200));
-  const rifiutataPerché = p2.corpo?.weak_password?.reasons?.join(', ') ?? '';
-  annota(
-    `2b. Registrazione con password compromessa (${PW_PWNED.length} caratteri, lunghezza a norma)`,
-    'HTTP 422, error_code = weak_password, motivo "pwned"',
-    `HTTP ${p2.stato}, error_code = ${p2.corpo.error_code ?? '(nessuno)'}${rifiutataPerché ? ` [${rifiutataPerché}]` : ''} — "${p2.corpo.msg ?? ''}"`,
-    p2.stato === 422 && p2.corpo.error_code === 'weak_password',
-  );
-  if (p2.stato === 200) {
-    console.log('  ⚠️  L\'account È STATO CREATO: la protezione password compromesse non è attiva.');
-    console.log('      Sul piano free non è attivabile (richiede il piano Pro).');
-    console.log('      Lancia «pulisci» per rimuovere questo account.\n');
+    const p2 = await registra(TEL_PWNED, PW_PWNED);
+    salvaStato(segnaEsistenza(stato, 'pwned', p2.stato === 200));
+    const rifiutataPerché = p2.corpo?.weak_password?.reasons?.join(', ') ?? '';
+    annota(
+      `2b. Registrazione con password compromessa (${PW_PWNED.length} caratteri, lunghezza a norma)`,
+      'HTTP 422, error_code = weak_password, motivo "pwned"',
+      `HTTP ${p2.stato}, error_code = ${p2.corpo.error_code ?? '(nessuno)'}${rifiutataPerché ? ` [${rifiutataPerché}]` : ''} — "${p2.corpo.msg ?? ''}"`,
+      p2.stato === 422 && p2.corpo.error_code === 'weak_password',
+    );
+    if (p2.stato === 200) {
+      console.log('  ⚠️  L\'account È STATO CREATO: la protezione password compromesse non è attiva');
+      console.log('      su questo progetto, nonostante il piano. Controlla Authentication →');
+      console.log('      Policies, poi lancia «pulisci» per rimuovere questo account.\n');
+    }
+    await attendi(1200);
   }
-  await attendi(1200);
 
   /* --- PROVA 3: l'utente storico riesce ancora a entrare ---------- */
   const p3 = await entra(TEL_LEGACY, PW_LEGACY_ATTUALE);
@@ -499,7 +578,11 @@ async function verifica() {
 
     /* Controprova: la via d'uscita esiste davvero. Senza questa, un 422
        potrebbe voler dire "il cambio password è rotto", non "la regola vale". */
-    const violata = await quanteVolteViolata(PW_NUOVA);
+    /* La ricerca su HIBP serve solo a scrivere «non compromessa» accanto
+       all'esito. Sul piano free il server quel controllo non lo fa, quindi
+       l'etichetta non descriverebbe niente — e «senza contattare HIBP»
+       dev'essere vero per tutta la corsa, non per la sola prova 2. */
+    const violata = conPro ? await quanteVolteViolata(PW_NUOVA) : null;
 
     /* PRIMA della PUT, non dopo. Se la richiesta parte, arriva al server e
        la risposta si perde per strada, la password sul server è già quella
@@ -521,7 +604,11 @@ async function verifica() {
     }
   }
 
-  const tutteOk = stampaRapporto();
+  const { tutteOk, saltate } = chiudi();
+  if (saltate) {
+    console.log(`\n${saltate} prova saltata: non incide sull'esito, `
+      + `perché non dice niente sul server. Riesegui con ${FLAG_PRO} dopo il passaggio a Pro.`);
+  }
   console.log('\nAccount di prova ancora presenti. Per rimuoverli: node verifica/password-server.mjs pulisci');
   process.exitCode = tutteOk ? 0 : 1;
 }
@@ -553,6 +640,15 @@ async function pulisci() {
     console.log(`${r.riuscito ? '✓' : '✗'} ${emailDa(r.telefono)} → ${r.nota}`);
   }
 
+  /* La prova sulle password compromesse oggi non parte, ma prima sì, e sul
+     piano free l'account veniva creato davvero. Se ne salta fuori uno, è un
+     residuo: vale la pena dirlo invece di lasciarlo passare fra le righe. */
+  const residuoPwned = righe.find((r) => r.id === 'pwned' && r.nota.startsWith('cancellato'));
+  if (residuoPwned) {
+    console.log('\n  (l\'account con password compromessa era rimasto da una verifica');
+    console.log('   precedente: adesso quella prova non parte più senza --pro)');
+  }
+
   if (tutteRiuscite) {
     rimuoviStato();
     console.log(`\nFatto. File di stato rimosso (${PERCORSO_STATO}).`);
@@ -580,11 +676,13 @@ const lanciatoDaRiga = Boolean(process.argv[1])
   && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (lanciatoDaRiga) {
-  const comando = process.argv[2];
+  const [, , comando, ...argomenti] = process.argv;
   const azioni = { prepara, verifica, pulisci };
   if (!azioni[comando]) {
     console.log('Uso: node verifica/password-server.mjs [prepara|verifica|pulisci]');
+    console.log(`     ${FLAG_PRO}  con «verifica»: esegue anche la prova sulle password`);
+    console.log('           compromesse, che richiede il piano Supabase Pro');
     process.exit(1);
   }
-  azioni[comando]().catch((e) => { console.error('\nErrore:', e.message); process.exit(1); });
+  azioni[comando](argomenti).catch((e) => { console.error('\nErrore:', e.message); process.exit(1); });
 }
