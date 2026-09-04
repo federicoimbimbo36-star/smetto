@@ -319,3 +319,78 @@ Nessuna chiamata a Supabase, di produzione o di altro tipo: il finto server
 identici byte per byte, e il bundle prodotto ha lo stesso nome con hash di
 prima (`index-DRKof4Ul.js`): la prova che il codice dell'app non è stato
 sfiorato.
+
+---
+
+## Aggiunta: la prova sulle password compromesse non parte più da sola
+
+Il progetto è sul piano **free**, dove la protezione HIBP non è attivabile.
+La prova 2 quindi non poteva passare — e per fallire faceva una cosa
+peggiore del fallire: **registrava davvero** un account con
+`passwordpassword`, una password nota a chiunque, su un progetto vero. Una
+prova che lasciava dietro di sé esattamente la cosa da cui doveva
+difendere.
+
+Adesso di suo non parte. Si accende con `--pro`, il giorno che il piano
+cambia:
+
+```bash
+node verifica/password-server.mjs verifica          # free: la prova 2 è saltata
+node verifica/password-server.mjs verifica --pro    # dopo il passaggio a Pro
+```
+
+### Saltata non è fallita
+
+Il rapporto ha tre esiti invece di due. Una prova che non si può eseguire
+non dice niente sul server: contarla fra le fallite farebbe uscire in rosso
+l'intera verifica per una cosa che non è un difetto, e un rosso che si
+impara a ignorare copre anche quelli veri.
+
+```
+ SALTATA  2. Registrazione con password compromessa
+        motivo:   saltata: richiede Supabase Pro — riesegui con --pro dopo il passaggio di piano
+…
+RAPPORTO: 6 prove su 6, 1 saltata
+– 2. Registrazione con password compromessa → saltata: richiede Supabase Pro
+>>> exit code: 0
+```
+
+Resta però **visibile**, con il motivo: sparire in silenzio sarebbe
+l'errore opposto, e un giorno nessuno si ricorderebbe che c'è una prova da
+riaccendere.
+
+### Il dettaglio che poteva far danni
+
+Saltare la prova **non cancella quello che si sapeva**. Chi ha lanciato le
+verifiche prima di questa correzione, sul piano free, si è ritrovato
+l'account pwned creato per davvero: la protezione non c'era, la
+registrazione è passata. Se il salto di oggi sovrascrivesse quel
+`esiste: true` con un `false`, `pulisci` lo salterebbe come «mai creato» e
+quell'account resterebbe sul progetto per sempre.
+
+`segnaSaltato` scrive «non creato» **solo se non sapevamo già il
+contrario**. Uno stato precedente con l'account pwned vivo continua a
+essere ripulito, e `pulisci` lo segnala come residuo.
+
+Anche la ricerca su HIBP della prova 4b è legata allo stesso flag: serviva
+solo a scrivere «non compromessa» accanto all'esito, e «senza contattare
+HIBP» dev'essere vero per tutta la corsa, non per la sola prova 2.
+
+### La verifica
+
+`verifica/password-server-stato.mjs` sale a **77 controlli**. Il blocco I
+avvia la **CLI vera** contro un finto server su `127.0.0.1` con il minimo a
+12, e misura invece di dedurre: che l'account pwned non riceva nessuna
+richiesta, che il rapporto dica «saltata: richiede Supabase Pro», che
+l'uscita sia 0, e che con `--pro` il ramo venga percorso davvero.
+
+«Non contatta HIBP» non si legge dal codice: una spia caricata con
+`--import` avvolge `fetch` nel processo figlio ed elenca ogni indirizzo che
+non sia il server finto. L'elenco dev'essere vuoto.
+
+Otto mutazioni provate una per una — la prova 2 che gira sempre, il flag
+ignorato, il flag sempre acceso, la saltata contata come fallita, la
+saltata nascosta, il salto che cancella `esiste: true`, HIBP chiamata senza
+`--pro`, il motivo che non nomina il piano — e la suite le ha rilevate
+tutte e otto. La chiamata a HIBP fuori posto è stata vista **solo** dalla
+spia di rete: senza quella, sarebbe passata.
