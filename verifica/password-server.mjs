@@ -21,6 +21,41 @@
  *                                                                     *
  * Usa solo numeri di telefono inesistenti (+39 000 000 000x) e chiavi *
  * pubbliche. La service_role non serve e non va messa qui.            *
+ * ------------------------------------------------------------------ *
+ * QUANDO VA LANCIATO: PRIMA DI ACCENDERE LA VERIFICA ANTI-BOT.        *
+ *                                                                     *
+ * Questo file parla all'API di autenticazione DIRETTAMENTE, con       *
+ * `fetch`: chiama `/auth/v1/signup` e                                 *
+ * `/auth/v1/token?grant_type=password` senza passare da un browser.   *
+ * Sono due dei percorsi che Supabase protegge con il CAPTCHA quando   *
+ * l'interruttore e' acceso (Authentication -> Attack Protection).     *
+ *                                                                     *
+ * Da quel momento in poi queste prove ricevono                        *
+ *   400  captcha_failed                                               *
+ *   «captcha protection: request disallowed (no captcha_token found)» *
+ * e NON E' UN GUASTO: e' la protezione che funziona. Un token di      *
+ * Turnstile lo puo' produrre solo un browser che ha risolto la sfida; *
+ * da riga di comando non esiste modo di ottenerne uno vero.           *
+ *                                                                     *
+ * Quindi l'ordine e' questo, e non e' invertibile:                    *
+ *                                                                     *
+ *   1. `prepara` / `verifica` / `pulisci` da qui, a CAPTCHA spento;   *
+ *   2. poi si accende l'interruttore su Supabase.                     *
+ *                                                                     *
+ * Se serve rilanciarle a protezione gia' accesa ci sono due strade, e *
+ * tutte e due vanno sapute per intero:                                *
+ *                                                                     *
+ *   · spegnere l'interruttore, lanciare, riaccendere. Nella finestra  *
+ *     in mezzo il progetto e' scoperto: e' una manutenzione a tempo,  *
+ *     non uno stato in cui restare.                                   *
+ *   · mettere in Supabase la secret finta «passa sempre» di           *
+ *     Cloudflare e mandare il token finto. E' la stessa cosa detta in *
+ *     un altro modo: in quella finestra passa qualunque richiesta.    *
+ *     Non e' piu' sicuro, sembra soltanto piu' ordinato.              *
+ *                                                                     *
+ * Quello che NON e' toccato dal CAPTCHA e continua a funzionare       *
+ * sempre: `verifica/turnstile.mjs` (nessuna rete, finto server) e     *
+ * tutto il resto di `npm run verifica:completa`.                      *
  * ------------------------------------------------------------------ */
 
 import {

@@ -91,7 +91,44 @@ eq('B1  default-src chiuso su sé stessi', csp['default-src'], ["'self'"]);
 eq('B2  base-uri bloccato', csp['base-uri'], ["'self'"]);
 eq('B3  object-src spento', csp['object-src'], ["'none'"]);
 eq('B4  form-action limitata', csp['form-action'], ["'self'"]);
-eq('B5  script-src senza eccezioni', csp['script-src'], ["'self'"]);
+/* L'UNICA ECCEZIONE, ED È UN ELENCO CHIUSO.
+
+   `script-src 'self'` era il pezzo più prezioso di questa CSP e ci entra
+   un'origine di terze parti: va detto per intero, non ammorbidito.
+
+   Perché ci entra: la verifica anti-bot davanti ad accesso, registrazione
+   e cambio password è Cloudflare Turnstile, e Turnstile gira nel browser —
+   non esiste un modo di usarlo senza caricare il suo `api.js` dal suo
+   dominio. Cloudflare raccomanda l'alternativa più stretta (un nonce per
+   richiesta con `strict-dynamic`), che qui non è disponibile: gli header
+   di `vercel.json` sono statici e un nonce diverso a ogni risposta non lo
+   possono generare.
+
+   Perché resta un elenco e non un permesso: `eq` e non `includes`. Se un
+   domani qualcuno aggiunge una terza origine «solo per provare», questo
+   controllo fallisce. Un `includes` no, e la deroga si allargherebbe da
+   sola senza che nessuno la colleghi a questa decisione. */
+eq('B5  script-src: sé stessi più la sola eccezione Turnstile', csp['script-src'],
+  ["'self'", 'https://challenges.cloudflare.com']);
+
+/* L'iframe della sfida. Prima non c'era nessuna `frame-src`, quindi
+   ricadeva su `default-src 'self'` e l'iframe di Turnstile sarebbe stato
+   bloccato — con il widget che resta un rettangolo vuoto e nessun errore
+   visibile a parte una riga in console. Anche qui elenco chiuso. */
+eq('B5b frame-src: solo l\'iframe della sfida', csp['frame-src'],
+  ['https://challenges.cloudflare.com']);
+
+/* LA DIRETTIVA CHE NON SI ALLARGA FINCHÉ NON SERVE.
+
+   La documentazione di riferimento di Turnstile chiede due direttive:
+   `script-src` e `frame-src`. La pagina sull'implementazione dentro le
+   WebView mostra un esempio che aggiunge anche `connect-src`. Le due non
+   concordano, e nel dubbio la scelta è stata: non allargare. Se un giorno
+   la console di produzione mostrerà una connessione bloccata verso
+   challenges.cloudflare.com, allora si aggiunge — con la prova in mano e
+   cambiando questo controllo, non prima e non «per sicurezza». */
+ok('B5c connect-src non è stata allargata a Cloudflare senza una prova',
+  !(csp['connect-src'] ?? []).includes('https://challenges.cloudflare.com'));
 
 /* Il doppio lucchetto contro l'iframe: `frame-ancestors` è quello che
    conta sui browser di oggi, `X-Frame-Options` copre quelli che non la
@@ -155,6 +192,7 @@ const permesse = new Set(
 );
 
 eq('C1  il sorgente usa esattamente tre origini esterne', [...usate].sort(), [
+  'https://challenges.cloudflare.com',
   'https://fonts.googleapis.com',
   'https://mzsiqlhovliginqazwrx.supabase.co',
 ]. concat([...usate].filter((o) => o === 'https://fonts.gstatic.com')).sort());
@@ -186,6 +224,41 @@ ok('C5  Google Fonts è consentito come foglio di stile',
   (csp['style-src'] ?? []).includes('https://fonts.googleapis.com'));
 ok('C6  i file dei font arrivano da gstatic',
   (csp['font-src'] ?? []).includes('https://fonts.gstatic.com'));
+
+/* ------------------------------------------------------------------ */
+/* Lo script di Turnstile: dov'è, da dove viene, com'è configurato     */
+/*                                                                     */
+/* Stesso principio del blocco C4 sul dominio Supabase: l'origine non  */
+/* si riscrive a mano due volte. Si legge dal tag vero in index.html e */
+/* la si confronta con la CSP, così spostare lo script fa fallire      */
+/* questa prova invece di lasciare una CSP che permette un'origine che */
+/* nessuno carica più.                                                 */
+/* ------------------------------------------------------------------ */
+const indice = leggi('index.html');
+const [tagTurnstile] = indice.match(/<script[^>]*challenges\.cloudflare\.com[^>]*>/) ?? [];
+const [urlTurnstile] = indice.match(/https:\/\/challenges\.cloudflare\.com\/turnstile\/[^\s"']+/) ?? [];
+
+ok('C5b index.html carica lo script di Turnstile', Boolean(tagTurnstile), indice.includes('turnstile') ? '' : 'nessun tag trovato');
+ok('C5c lo script viene dall\'origine permessa in script-src',
+  Boolean(urlTurnstile) && (csp['script-src'] ?? []).includes(origineDa(urlTurnstile)),
+  `script: ${urlTurnstile}, script-src: ${(csp['script-src'] ?? []).join(' ')}`);
+
+/* `render=explicit` non è un dettaglio di stile: senza, Turnstile cerca da
+   solo gli elementi `.cf-turnstile` appena si carica e disegna dentro un
+   nodo che il render successivo di React può già aver sostituito. Il
+   risultato è un widget che si vede e non produce nessun token. */
+ok('C5d il render è esplicito, non automatico', /render=explicit/.test(urlTurnstile ?? ''));
+
+/* `async defer`: lo script non deve bloccare il primo disegno della
+   schermata di accesso. Il componente sa aspettare che arrivi. */
+ok('C5e lo script non blocca il rendering', /\basync\b/.test(tagTurnstile ?? '') && /\bdefer\b/.test(tagTurnstile ?? ''));
+
+/* Nessuna chiave nel markup. La sitekey è pubblica ma arriva da una
+   variabile d'ambiente, non scritta a mano qui dentro; la secret key non
+   deve comparire in nessun file di questo repository. Le chiavi Turnstile
+   cominciano tutte per `0x4`. */
+ok('C5f nessuna chiave Turnstile scritta in index.html', !/0x4[A-Za-z0-9_-]{10,}/.test(indice));
+ok('C5g nessuna chiave Turnstile scritta in vercel.json', !/0x4[A-Za-z0-9_-]{10,}/.test(testoConfig));
 
 /* Immagini e manifest sono tutti locali: icone in public/, favicon,
    e le icone delle notifiche web (/icon-192.png, /badge.png). */
