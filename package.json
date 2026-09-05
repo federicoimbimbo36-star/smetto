@@ -11,7 +11,7 @@
     "lint": "eslint .",
     "verifica": "TZ=Europe/Rome node verifica/controlli.mjs && TZ=Europe/Rome node verifica/persistenza.mjs && node verifica/redesign.mjs",
     "verifica:schermate": "esbuild verifica/schermate.jsx --bundle --platform=node --format=cjs --jsx=automatic --loader:.css=empty --outfile=verifica/.schermate.cjs && node verifica/.schermate.cjs",
-    "verifica:completa": "npm run verifica && node verifica/gruppi.mjs && node verifica/coda-utente.mjs && TZ=Europe/Rome node verifica/annulla-lotto.mjs && node verifica/account.mjs && node verifica/affidabilita.mjs && node verifica/password-debole.mjs && node verifica/password-server-stato.mjs && node verifica/intestazioni.mjs && npm run verifica:schermate"
+    "verifica:completa": "npm run verifica && node verifica/gruppi.mjs && node verifica/coda-utente.mjs && TZ=Europe/Rome node verifica/annulla-lotto.mjs && node verifica/account.mjs && node verifica/affidabilita.mjs && node verifica/password-debole.mjs && node verifica/password-server-stato.mjs && node verifica/turnstile.mjs && node verifica/intestazioni.mjs && npm run verifica:schermate"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

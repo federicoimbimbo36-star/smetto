@@ -18,8 +18,8 @@ quello lo puoi aprire dal telefono, se è sulla stessa rete di casa.
 npm run build             # produce dist/
 npm run preview           # serve dist/ come in produzione
 npm run lint              # 0 errori, 0 avvisi
-npm run verifica          # calcoli + persistenza + interfaccia: 1505 controlli
-npm run verifica:completa # tutto quanto: 2023 controlli + le schermate
+npm run verifica          # calcoli + persistenza + interfaccia: 1538 controlli
+npm run verifica:completa # tutto quanto: 2643 controlli + le schermate
 ```
 
 ### `npm run verifica:completa`
@@ -32,14 +32,21 @@ prima che fallisce:
 |---|---|---|
 | `controlli.mjs` | i calcoli | 311 |
 | `persistenza.mjs` | che i dati non spariscano | 133 |
-| `redesign.mjs` | markup, CSS, accessibilità | 1061 |
+| `redesign.mjs` | markup, CSS, accessibilità | 1094 |
 | `gruppi.mjs` | rete incerta e classifica | 25 |
 | `coda-utente.mjs` | code attribuite all'utente, scritture offline | 49 |
 | `annulla-lotto.mjs` | annullamento delle registrazioni arretrate | 41 |
-| `account.mjs` | eliminazione dell'account | 22 |
-| `affidabilita.mjs` | gare di sessione, uscita e rientro nei gruppi, gare fra programmazione e annullamento notifiche, letture altrui, pareggi, gruppi sciolti, gare della sincronizzazione, logout fra schede dello stesso browser, risveglio delle schede sospese, scope del logout, marcatore di logout persistente, identificativo della build | 381 |
+| `account.mjs` | eliminazione dell'account | 297 |
+| `affidabilita.mjs` | gare di sessione, uscita e rientro nei gruppi, gare fra programmazione e annullamento notifiche, letture altrui, pareggi, gruppi sciolti, gare della sincronizzazione, logout fra schede dello stesso browser, risveglio delle schede sospese, scope del logout, marcatore di logout persistente, identificativo della build | 418 |
+| `password-debole.mjs` | l'account storico con password sotto il minimo del server | 23 |
+| `password-server-stato.mjs` | lo stato condiviso fra le fasi delle prove sul server | 77 |
+| `turnstile.mjs` | verifica anti-bot: token sul filo, azzeramento, errori distinti | 103 |
+| `intestazioni.mjs` | gli header di sicurezza contro il codice, nei due versi | 72 † |
 | `schermate.jsx` | ogni schermata renderizzata davvero | 42–44 stati * |
-| | **totale** | **2023** + le schermate |
+| | **totale** | **2643** + le schermate |
+
+† `intestazioni.mjs` passa a 75 dopo `npm run build`: il blocco F guarda il
+CSS costruito, e senza `dist/` si salta dichiarandolo a schermo.
 
 \* `schermate.jsx` parte da `Date.now()` e gira senza `TZ` fissa, quindi alcuni
 controlli scattano o no a seconda dell'ora: il numero oscilla fra 42 e 44 nella
@@ -93,7 +100,7 @@ revisione partiva, `cancella` no, quindi una cancellazione con una revisione
 vecchia poteva portarsi via il lavoro di un altro dispositivo. Con il DELETE
 secco di prima ne fallivano **7**. Vedi `PERSISTENZA.md`.
 
-`verifica/redesign.mjs` (1061) controlla l'**interfaccia**: tag JSX e parentesi
+`verifica/redesign.mjs` (1094) controlla l'**interfaccia**: tag JSX e parentesi
 bilanciate, componenti importati davvero, import mai usati, costanti usate prima
 di essere dichiarate, ogni classe scritta nel markup esistente in `styles.css`
 (e viceversa), contrasto WCAG AA di ogni coppia testo/fondo, bersagli tattili da
@@ -133,6 +140,8 @@ verifica/coda-utente.mjs   code attribuite all'utente, scritture offline
 verifica/annulla-lotto.mjs annullamento delle arretrate
 verifica/account.mjs       eliminazione dell'account
 verifica/affidabilita.mjs  i sei punti della fase 2
+verifica/turnstile.mjs     verifica anti-bot davanti all'autenticazione
+verifica/intestazioni.mjs  header di sicurezza e CSP contro il codice
 verifica/schermate.jsx     ogni schermata montata e renderizzata
 strumenti/genera-icone.py  rifà le icone PNG dal logo
 ```

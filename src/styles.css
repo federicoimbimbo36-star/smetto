@@ -258,6 +258,17 @@ body {
 .campo-input:focus { outline: none; border-color: var(--verde); }
 .campo-input:disabled { color: var(--t2); background: var(--neutro-velo); border-color: transparent; }
 .campo-errore { font-size: 13.5px; font-weight: 600; color: var(--pesca-scuro); margin: var(--s2) 0 0; }
+
+/* Il riquadro anti-bot. Turnstile disegna dentro `.captcha-riquadro` un
+   iframe di dimensione sua, che non si può ridimensionare da fuori: qui si
+   decide solo dove sta e quanto spazio si prende intorno. `min-height`
+   tiene il posto mentre lo script arriva, altrimenti la schermata salta
+   sotto le dita di chi sta già scrivendo — e su iPhone, con la tastiera
+   aperta, un salto di 65px sposta il bottone da sotto il pollice. */
+.captcha { margin: var(--s4) 0 0; }
+.captcha-riquadro { display: flex; justify-content: center; min-height: 65px; }
+.captcha-nota { font-size: 12.5px; font-weight: 500; line-height: 1.6; color: var(--t2); margin: var(--s2) 0 0; text-align: center; }
+
 .campo-password { position: relative; }
 .campo-password .campo-input { padding-right: 52px; }
 .campo-occhio {

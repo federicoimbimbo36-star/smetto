@@ -16,3 +16,4 @@ export { default as AggiungiTante } from './AggiungiTante';
 export { default as CampoTelefono } from './CampoTelefono';
 export { default as FattoConIA } from './FattoConIA';
 export { default as FaseStop, faseStop } from './FaseStop';
+export { default as Turnstile } from './Turnstile';

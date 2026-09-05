@@ -26,6 +26,27 @@
     <meta name="apple-mobile-web-app-title" content="Smetto" />
     <meta name="mobile-web-app-capable" content="yes" />
 
+    <!-- Verifica anti-bot davanti ad accesso, registrazione e cambio
+         password. Lo script sta qui e non dentro un componente per due
+         ragioni: serve una volta sola per pagina, e un componente che se
+         lo carica da sé deve poi riscriversi a mano il controllo che
+         evita di inserirlo due volte.
+
+         `render=explicit` NON è opzionale con React: senza, appena si
+         carica Turnstile va a cercare da solo gli elementi `.cf-turnstile`
+         e disegna dentro un nodo che il render successivo può già aver
+         sostituito — widget fantasma e nessun token. Il montaggio lo
+         comanda src/components/Turnstile.jsx.
+
+         `async defer` vuol dire che al primo render `window.turnstile`
+         può ancora non esserci: il componente aspetta, non dà per
+         scontato.
+
+         L'origine qui sotto dev'essere la stessa che compare in
+         `script-src` dentro vercel.json, e `verifica/intestazioni.mjs`
+         controlla proprio questo, nei due versi. -->
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
+
     <title>Smetto</title>
   </head>
   <body>

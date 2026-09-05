@@ -78,7 +78,14 @@ const localAuth = {
     window.addEventListener('storage', ascolta);
     return () => window.removeEventListener('storage', ascolta);
   },
-  async signUp(phone, password) {
+  /* LE FIRME RESTANO QUELLE DI supabaseAuth, token compreso.
+
+     Qui il token non serve a niente — non c'è nessun server da
+     convincere — ma accettarlo è l'unica cosa che tiene i due backend
+     davvero intercambiabili. Una firma più corta di là non darebbe
+     errore: JavaScript butta via l'argomento in più in silenzio, e il
+     giorno che qualcuno inverte due parametri se ne accorge l'utente. */
+  async signUp(phone, password, captchaToken) {
     if (password.length < 12) return { error: 'password-debole' };
     const db = await readStore(AUTH_KEY, vuotoAuth);
     if (db.byPhone[phone]) return { error: 'registrazione-non-riuscita' };
@@ -93,7 +100,7 @@ const localAuth = {
     await writeStore(AUTH_KEY, db);
     return { user: { id, ...db.users[id].profile } };
   },
-  async signIn(phone, password) {
+  async signIn(phone, password, captchaToken) {
     const db = await readStore(AUTH_KEY, vuotoAuth);
     const id = db.byPhone[phone];
     if (!id) return { error: 'credenziali' };
@@ -133,7 +140,7 @@ const localAuth = {
     await writeStore(AUTH_KEY, db);
     return { profile: db.users[id].profile };
   },
-  async changePassword(id, current, next) {
+  async changePassword(id, current, next, captchaToken) {
     if (next.length < 12) return { error: 'password-debole' };
     const db = await readStore(AUTH_KEY, vuotoAuth);
     const rec = db.users[id];
@@ -146,7 +153,7 @@ const localAuth = {
     await writeStore(AUTH_KEY, db);
     return {};
   },
-  async requestRecovery() { return { error: 'sms-non-disponibile' }; },
+  async requestRecovery(phone, captchaToken) { return { error: 'sms-non-disponibile' }; },
   async verifyRecovery() { return { error: 'sms-non-disponibile' }; },
   async deleteAccount(id) {
     const db = await readStore(AUTH_KEY, vuotoAuth);

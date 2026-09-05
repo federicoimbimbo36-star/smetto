@@ -6,6 +6,7 @@ export default function AuthScreen(props) {
     mode, setMode, phone, setPhone, paese, setPaese,
     password, setPassword, confirmPassword, setConfirmPassword,
     showPassword, setShowPassword, showConfirmPassword, setShowConfirmPassword, error, busy, onSubmit,
+    captcha,
   } = props;
   const invio = (e) => { if (e.key === 'Enter' && !busy) onSubmit(); };
   const registrazione = mode === 'signup';
@@ -92,6 +93,11 @@ export default function AuthScreen(props) {
           </div>
         </div>
       )}
+
+      {/* Il riquadro sta SOPRA l'errore e sopra il bottone, non in fondo
+          alla schermata: quando la verifica fallisce, il messaggio che
+          spiega cosa fare deve trovarsi accanto alla cosa da guardare. */}
+      {captcha}
 
       {error && <p className="campo-errore">{error}</p>}
 

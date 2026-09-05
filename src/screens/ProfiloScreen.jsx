@@ -28,7 +28,7 @@ export default function ProfiloScreen({
   onSave, onRecovery, onChangePassword, onDelete, onLogout, onResetLog,
   totale, notifiche, onToggleNotifiche, avvisiCorpo, onToggleCorpo, profile, onProfileChange,
   onExportJSON, onExportCSV, start, conti, giorniPercorso, motivo, onModificaMotivo, obiettivo,
-  smessoDal, giorniSenza, onDichiaraSmesso, onAnnullaSmesso,
+  smessoDal, giorniSenza, onDichiaraSmesso, onAnnullaSmesso, captcha,
 }) {
   /* I campi numerici tengono una BOZZA di testo, non il numero: se si
      riconverte a ogni tasto, appena si scrive la virgola di "6,50" il
@@ -386,6 +386,11 @@ export default function ProfiloScreen({
           className="campo-input" type="password" placeholder="Conferma la nuova password" autoComplete="new-password"
           value={pwFields.confirm} onChange={(e) => setPwFields((p) => ({ ...p, confirm: e.target.value }))}
         />
+        {/* Serve a tutti e due i bottoni qui sotto: il cambio password
+            verifica quella attuale con un accesso vero, e la richiesta del
+            codice passa dall'endpoint degli OTP. Sono due delle chiamate
+            che il server protegge. */}
+        {captcha}
         <button className="btn btn-secondario btn-blocco" onClick={onChangePassword}>Cambia password</button>
         <button className="btn btn-testo btn-testo-centro" onClick={onRecovery}>
           L'ho dimenticata — recupera via SMS

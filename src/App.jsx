@@ -37,14 +37,31 @@ import {
 import { PREFISSO_DEFAULT } from './data/prefissi';
 import groups, { smista } from './data/groups';
 import {
-  ConfirmDialog, RecoveryOtpModal, BottomNav, UmoreFoglio, Respiro, AggiungiTante,
+  ConfirmDialog, RecoveryOtpModal, BottomNav, UmoreFoglio, Respiro, AggiungiTante, Turnstile,
 } from './components';
+import {
+  leggiSitekey, conTentativo, MESSAGGIO_CAPTCHA,
+} from './utils/captcha';
 import {
   AuthScreen, OnboardingScreen, CravingOverlay, RicadutaOverlay,
   OggiScreen, PercorsoScreen, AiutoScreen, GruppoScreen, ProfiloScreen,
 } from './screens';
 import { programmaTappe, annullaTappe } from './notificheTappe';
 import './styles.css';
+
+/* LA CHIAVE PUBBLICA DEL WIDGET ANTI-BOT.
+
+   Stessa guardia di `supabaseClient.js`: in Vite `import.meta.env` c'è, in
+   Node no, e senza il controllo l'import esploderebbe fuori dal browser.
+
+   Vuota = nessun widget, nessun token, e le chiamate a Supabase escono
+   identiche a prima. È il comportamento che serve finché la protezione
+   CAPTCHA è spenta sul progetto Supabase: il codice si può pubblicare e
+   collaudare in produzione PRIMA di accendere l'interruttore, e non c'è
+   nessuna finestra in cui accesso e registrazione siano rotti. */
+const SITEKEY_TURNSTILE = leggiSitekey(
+  (typeof import.meta !== 'undefined' && import.meta.env) || {},
+);
 
 /* Funzione e non costante: il registro vuoto contiene array e oggetti, e
    una costante a livello di modulo li condividerebbe fra tutti quelli che
@@ -90,6 +107,22 @@ export default function App() {
   const [authBusy, setAuthBusy] = useState(false);
   const [showAuthPassword, setShowAuthPassword] = useState(false);
   const [showAuthConfirmPassword, setShowAuthConfirmPassword] = useState(false);
+
+  /* DUE WIDGET, DUE TOKEN, DUE CONTATORI.
+
+     Uno sulla schermata di accesso (registrazione e login), uno nel
+     Profilo (cambio password e richiesta del codice di recupero). Non un
+     token solo condiviso: le due schermate non sono mai a video insieme,
+     ma un token è monouso e spenderlo di là lascerebbe di qua una
+     stringa che il server ha già scartato.
+
+     Il contatore è il comando di azzeramento: un numero che cresce è un
+     fatto che React propaga da sé, senza riferimenti imperativi appesi a
+     componenti che potrebbero essere già smontati. */
+  const [captchaAuth, setCaptchaAuth] = useState('');
+  const [azzeramentiAuth, setAzzeramentiAuth] = useState(0);
+  const [captchaProfilo, setCaptchaProfilo] = useState('');
+  const [azzeramentiProfilo, setAzzeramentiProfilo] = useState(0);
 
   const [user, setUser] = useState(UTENTE_VUOTO);
   const [nicknameDraft, setNicknameDraft] = useState('');
@@ -717,6 +750,25 @@ export default function App() {
 
   function switchAuthMode(mode) { setAuthMode(mode); setAuthError(''); }
 
+  /* IL TOKEN SI BUTTA VIA DOPO OGNI TENTATIVO, riuscito o no.
+
+     Turnstile ne emette uno spendibile una volta sola: al secondo invio
+     lo stesso token torna indietro come già speso. Senza queste due
+     righe, chi sbaglia la password e poi la scrive giusta si vede
+     rifiutare anche quella — e l'errore che legge parla di credenziali,
+     non di verifica anti-bot. Si azzerano insieme la copia in memoria e
+     il widget a schermo, perché tenerne una sola aggiornata vuol dire
+     mandare al server una stringa che non corrisponde a niente. */
+  function azzeraCaptchaAuth() {
+    setCaptchaAuth('');
+    setAzzeramentiAuth((n) => n + 1);
+  }
+
+  function azzeraCaptchaProfilo() {
+    setCaptchaProfilo('');
+    setAzzeramentiProfilo((n) => n + 1);
+  }
+
   async function handleAuthSubmit() {
     /* La lunghezza si controlla sul numero LOCALE e con i limiti del paese
        scelto: «almeno 8 cifre» andava bene finché il prefisso era sempre
@@ -741,11 +793,23 @@ export default function App() {
     const phone = componiTelefono(authPaese, authPhone);
     setAuthError(''); setAuthBusy(true);
     try {
-      const res = authMode === 'signup'
-        ? await auth.signUp(phone, authPassword)
-        : await auth.signIn(phone, authPassword);
+      /* IL TENTATIVO SI FA COMUNQUE, anche senza token.
+
+         Nessun controllo locale che blocchi l'invio quando il riquadro
+         non ha ancora risposto: chi decide se il token serve è il server,
+         e finché la protezione è spenta su Supabase un blocco qui
+         chiuderebbe fuori chiunque abbia un'estensione che ferma lo
+         script di Cloudflare, senza motivo. Se invece serve davvero, il
+         server risponde `captcha_failed` e sotto c'è scritto cosa fare. */
+      const res = await conTentativo(azzeraCaptchaAuth, () => (authMode === 'signup'
+        ? auth.signUp(phone, authPassword, captchaAuth)
+        : auth.signIn(phone, authPassword, captchaAuth)));
       if (res.error) {
-        if (authMode === 'signup') {
+        if (res.error === 'captcha') {
+          /* Prima di tutto il resto, e prima della risposta muta della
+             registrazione: non è un problema di numero né di password. */
+          setAuthError(MESSAGGIO_CAPTCHA);
+        } else if (authMode === 'signup') {
           setAuthError('Non è stato possibile completare la registrazione. Riprova più tardi o accedi.');
         } else if (res.error === 'password-debole') {
           /* Non è la password sbagliata: è quella giusta, ma più corta del
@@ -849,7 +913,11 @@ export default function App() {
   }
 
   async function handlePasswordRecovery() {
-    const res = await auth.requestRecovery(user.phone);
+    const res = await conTentativo(
+      azzeraCaptchaProfilo,
+      () => auth.requestRecovery(user.phone, captchaProfilo),
+    );
+    if (res?.error === 'captcha') { showToast(MESSAGGIO_CAPTCHA); return; }
     if (res?.error === 'sms-non-disponibile') {
       showToast('Recupero via SMS non ancora attivo: serve un provider SMS e il numero verificato.');
       return;
@@ -874,7 +942,15 @@ export default function App() {
     if (!pwFields.current || !pwFields.next) { showToast('Inserisci la password attuale e quella nuova.'); return; }
     if (pwFields.next.length < 12) { showToast('La nuova password deve avere almeno 12 caratteri.'); return; }
     if (pwFields.next !== pwFields.confirm) { showToast('La conferma non coincide con la nuova password.'); return; }
-    const res = await auth.changePassword(user.id, pwFields.current, pwFields.next);
+    const res = await conTentativo(
+      azzeraCaptchaProfilo,
+      () => auth.changePassword(user.id, pwFields.current, pwFields.next, captchaProfilo),
+    );
+    /* Il controllo della password attuale passa da un login vero, quindi
+       da un endpoint protetto: un rifiuto anti-bot qui non vuol dire che
+       la password sia sbagliata, e dirlo manderebbe la persona a cambiare
+       una password che non ha nessun problema. */
+    if (res.error === 'captcha') { showToast(MESSAGGIO_CAPTCHA); return; }
     if (res.error) { showToast('La password attuale non è corretta.'); return; }
     setPwFields({ current: '', next: '', confirm: '' });
     showToast('Password aggiornata ✅');
@@ -2123,6 +2199,9 @@ export default function App() {
             </div>
           </div>
         ) : !isAuthenticated ? (
+          /* L'azione del widget resta la stessa passando da «Accedi» a
+             «Registrati»: farla cambiare rimonterebbe Turnstile a ogni
+             tocco del segmento, cioè una sfida nuova per un'etichetta. */
           <div className="app-shell">
             <AuthScreen
               mode={authMode} setMode={switchAuthMode}
@@ -2133,6 +2212,12 @@ export default function App() {
               showPassword={showAuthPassword} setShowPassword={setShowAuthPassword}
               showConfirmPassword={showAuthConfirmPassword} setShowConfirmPassword={setShowAuthConfirmPassword}
               error={authError} busy={authBusy} onSubmit={handleAuthSubmit}
+              captcha={(
+                <Turnstile
+                  sitekey={SITEKEY_TURNSTILE} azione="accesso"
+                  alToken={setCaptchaAuth} azzeramenti={azzeramentiAuth}
+                />
+              )}
             />
           </div>
         ) : !dati?.onboarded ? (
@@ -2229,6 +2314,12 @@ export default function App() {
                   onModificaMotivo={() => salva({ ...dati, onboarded: false })}
                   smessoDal={dati?.smessoDal ?? null} giorniSenza={giorniSenza}
                   onDichiaraSmesso={dichiaraSmesso} onAnnullaSmesso={annullaSmesso}
+                  captcha={(
+                    <Turnstile
+                      sitekey={SITEKEY_TURNSTILE} azione="password"
+                      alToken={setCaptchaProfilo} azzeramenti={azzeramentiProfilo}
+                    />
+                  )}
                 />
               )}
             </div>

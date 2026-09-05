@@ -23,6 +23,7 @@
    VERE di questo file e finirebbe per provare una copia della loro logica
    riscritta nel test — cioè niente. */
 import { supabase, phoneToTechnicalEmail } from './supabaseClient.js';
+import { conCaptcha, captchaFallito } from '../utils/captcha.js';
 
 /* deve restare allineato al primo colore di PALETTE in constants.js */
 const PALETTE_DEFAULT = '#D19A3E';
@@ -89,6 +90,14 @@ export function leggiEsitoAccesso(esito) {
      mandare questa persona a riprovare la password che ha appena digitato
      correttamente è un vicolo cieco senza uscita. */
   if (passwordDebole(error)) return { error: 'password-debole' };
+
+  /* Stessa identica ragione, difetto nuovo: con la protezione anti-bot
+     accesa su Supabase, una richiesta senza token — o con un token già
+     speso, che è il caso del secondo tentativo — torna indietro con 400
+     `captcha_failed`. La password non è mai stata guardata. Dirle
+     «numero o password non corretti» manderebbe la persona a ridigitare
+     credenziali giuste finché non si convince di averle dimenticate. */
+  if (captchaFallito(error)) return { error: 'captcha' };
 
   return { error: 'credenziali' };
 }
@@ -192,9 +201,9 @@ const supabaseAuth = {
     return () => { try { data?.subscription?.unsubscribe?.(); } catch { /* già staccato */ } };
   },
 
-  async signUp(phone, password) {
+  async signUp(phone, password, captchaToken) {
     if (password.length < 12) return { error: 'password-debole' };
-    const { data, error } = await supabase.auth.signUp({
+    const { data, error } = await supabase.auth.signUp(conCaptcha({
       email: phoneToTechnicalEmail(phone),
       password,
       options: {
@@ -204,12 +213,21 @@ const supabaseAuth = {
           avatar_color: PALETTE_DEFAULT,
         },
       },
-    });
+    }, captchaToken));
 
-    // Non distinguere mai un numero già registrato da un altro errore di
-    // registrazione: l'account è identificato dall'email tecnica derivata
-    // dal numero e un messaggio specifico lo trasformerebbe in un oracolo.
-    if (error) return { error: 'registrazione-non-riuscita' };
+    /* L'UNICA ECCEZIONE ALLA RISPOSTA MUTA, e non riapre niente.
+
+       La regola qui sotto resta: non distinguere mai un numero già
+       registrato da un altro errore, perché l'account è identificato
+       dall'email tecnica derivata dal numero e un messaggio specifico lo
+       trasformerebbe in un oracolo per chi prova numeri a tappeto.
+
+       Un rifiuto anti-bot non dice niente sul numero: dice che la
+       richiesta non è nemmeno stata guardata. Tacerlo non protegge
+       nessuno e lascia la persona davanti a «riprova più tardi» mentre
+       l'unica cosa da fare è aspettare due secondi che il riquadro si
+       completi. */
+    if (error) return { error: captchaFallito(error) ? 'captcha' : 'registrazione-non-riuscita' };
     // Se non torna una sessione, il progetto ha ancora la conferma email
     // obbligatoria: va disattivata, perché qui l'email è tecnica e non reale.
     if (!data.session) {
@@ -220,11 +238,11 @@ const supabaseAuth = {
     return { user: { ...profile, id: data.user.id, phone } };
   },
 
-  async signIn(phone, password) {
-    const esito = await supabase.auth.signInWithPassword({
+  async signIn(phone, password, captchaToken) {
+    const esito = await supabase.auth.signInWithPassword(conCaptcha({
       email: phoneToTechnicalEmail(phone),
       password,
-    });
+    }, captchaToken));
 
     const letto = leggiEsitoAccesso(esito);
     if (letto.error) return { error: letto.error };
@@ -303,7 +321,16 @@ const supabaseAuth = {
     return { profile: await fetchProfile(id) };
   },
 
-  async changePassword(id, current, next) {
+  /* IL PERCORSO CHE SI DIMENTICA.
+
+     `updateUser` non è protetto dal CAPTCHA, ma il controllo della
+     password attuale qui sotto passa da `signInWithPassword`, cioè da
+     `/token?grant_type=password`, che lo è. Senza token qui, con la
+     protezione accesa, accesso e registrazione funzionano benissimo e il
+     cambio password smette di funzionare: il difetto più facile da non
+     vedere di tutta questa integrazione, perché nessuno cambia la
+     password mentre collauda il login. */
+  async changePassword(id, current, next, captchaToken) {
     if (next.length < 12) return { error: 'password-debole' };
     // Supabase non verifica la password attuale in updateUser: la ricontrolliamo
     // con un login "a vuoto" sullo stesso account prima di procedere.
@@ -315,7 +342,12 @@ const supabaseAuth = {
        questa persona è venuta a cambiare. Se la ricontrolla e la rifiuta,
        l'utente storico non ha più nessun modo di mettersi in regola —
        l'accesso lo lasciano entrare, il cambio password no. Vicolo cieco. */
-    const { error: checkError } = await supabase.auth.signInWithPassword({ email, password: current });
+    const { error: checkError } = await supabase.auth.signInWithPassword(
+      conCaptcha({ email, password: current }, captchaToken),
+    );
+    /* Prima del giudizio sulla password: un rifiuto anti-bot vuol dire che
+       la password attuale non è stata nemmeno confrontata. */
+    if (captchaFallito(checkError)) return { error: 'captcha' };
     if (checkError && !passwordDebole(checkError)) return { error: 'password attuale' };
 
     const { error } = await supabase.auth.updateUser({ password: next });
@@ -323,7 +355,7 @@ const supabaseAuth = {
     return {};
   },
 
-  async requestRecovery(phone) {
+  async requestRecovery(phone, captchaToken) {
     /* Perché questo controllo esiste.
        La registrazione avviene su un'email tecnica e il numero finisce solo
        nei metadati e nella tabella profiles: `auth.users.phone` resta VUOTO.
@@ -339,8 +371,13 @@ const supabaseAuth = {
     const { data: utente } = await supabase.auth.getUser();
     if (!utente?.user?.phone) return { error: 'sms-non-disponibile' };
 
-    const { error } = await supabase.auth.signInWithOtp({ phone });
+    const { error } = await supabase.auth.signInWithOtp(conCaptcha({ phone }, captchaToken));
     if (!error) return {};
+    /* Prima delle parole chiave sugli SMS: «captcha protection: request
+       disallowed» non contiene nessuna di quelle, quindi oggi finirebbe
+       nel ramo generico e la persona leggerebbe il testo crudo del
+       server. Il resto della logica di recupero non si tocca. */
+    if (captchaFallito(error)) return { error: 'captcha' };
     const m = error.message.toLowerCase();
     if (m.includes('sms') || m.includes('phone') || m.includes('provider') || m.includes('disabled')) {
       return { error: 'sms-non-disponibile' };
